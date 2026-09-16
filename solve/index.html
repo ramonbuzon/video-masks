@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="theme-color" content="#090b0d">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Solve</title>
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/cm-chessboard@8/assets/chessboard.css">
+
+<link rel="stylesheet" href="style.css">
+
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/ort.min.js"></script>
+</head>
+<body>
+<div id="app">
+
+<section id="home" class="screen active">
+  <div class="top safeTop">
+    <div class="brand"><div class="logo">♟</div><span>Solve</span></div><div style="width:44px"></div>
+  </div>
+  <div class="home safeBottom">
+    <div class="homeInner">
+      <div class="bigPiece">♟︎</div>
+      <h1>Sube el puzzle.<br>Yo hago el resto.</h1>
+      <p>Puede ser una captura completa. Leo el enunciado, encuentro el tablero, reconstruyo las piezas y busco la solución.</p>
+      <label class="pick" for="picker">＋ Elegir captura</label>
+      <input id="picker" type="file" accept="image/*">
+      
+      <div class="privacy">El reconocimiento y la resolución se ejecutan en el navegador. La primera vez se descargan los modelos.</div>
+    </div>
+  </div>
+</section>
+
+<section id="processing" class="screen">
+  <div class="top safeTop">
+    <div class="brand"><div class="logo">♟</div><span>Solve</span></div>
+    <button id="cancel" class="icon">×</button>
+  </div>
+  <div class="center safeBottom">
+    <div class="proc">
+      <img id="procImg" class="thumb">
+      <div class="spin"></div>
+      <div id="procTitle" class="procTitle">Leyendo el puzzle</div>
+      <div id="procText" class="procText">Buscando el tablero...</div>
+      <div class="progress"><div id="bar" class="bar"></div></div>
+    </div>
+  </div>
+</section>
+
+<section id="result" class="screen">
+  <div class="top safeTop">
+    <button id="back" class="icon">‹</button>
+    <div class="brand"><div class="logo">♟</div><span>Solve</span></div>
+    <button id="more" class="icon">•••</button>
+  </div>
+  <div class="result safeBottom">
+    <div class="problem"><span class="dot"></span><span id="problemText">Puzzle detectado</span></div>
+    <div class="boardWrap"><div id="board"></div></div>
+    <div class="meta">
+      <div id="mate" class="mate">Mate encontrado</div>
+      <div id="line" class="line"></div>
+    </div>
+    <div class="controls">
+      <button id="prev">‹</button>
+      <button id="play" class="play">▶ Play</button>
+      <button id="next">›</button>
+      <select id="speed" class="speed">
+        <option value="1500">0.5×</option>
+        <option value="950" selected>1×</option>
+        <option value="650">1.5×</option>
+        <option value="430">2×</option>
+      </select>
+    </div>
+    <div class="actions">
+      <button id="copy" class="action">Copiar solución</button>
+      <button id="share" class="action primary">Compartir</button>
+    </div>
+  </div>
+</section>
+
+<section id="error" class="screen">
+  <div class="top safeTop">
+    <button id="errorBack" class="icon">‹</button>
+    <div class="brand"><div class="logo">♟</div><span>Solve</span></div><div style="width:44px"></div>
+  </div>
+  <div class="center safeBottom">
+    <div class="errorCard">
+      <h2>La lectura no ha quedado fina</h2>
+      <p id="errorText">No he podido reconstruir el tablero con suficiente seguridad.</p>
+      <div class="errorBtns">
+        <label class="errorBtn" for="picker" style="display:flex;align-items:center;justify-content:center">Elegir otra captura</label>
+        <button id="debugBtn" class="errorBtn secondary">Ver lo que he leído</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div id="backdrop" class="backdrop"></div>
+<div id="sheet" class="sheet safeBottom">
+  <div class="handle"></div>
+  <h3>Detalles</h3>
+  <div class="debug"><strong>Enunciado leído</strong><br><span id="ocrDebug">...</span></div>
+  <div class="debug"><strong>Posición reconocida</strong><br><span id="fenDebug">...</span></div>
+  <div class="debug"><strong>Confianza visual</strong><br><span id="confidenceDebug">...</span></div>
+  <div class="sheetButtons">
+    <button id="flip">Girar tablero</button>
+    <button id="again" class="accent">Analizar otra vez</button>
+  </div>
+</div>
+
+</div>
+
+<script src="app1.js"></script>
+<script src="app2.js"></script>
+<script src="app3.js"></script>
+</body>
+</html>
