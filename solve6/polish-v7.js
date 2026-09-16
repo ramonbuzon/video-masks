@@ -134,6 +134,8 @@
 
   function setVideoLabel(){
     const b=document.getElementById('play');if(!b)return;
+    const desired=S?.playing?TXT.pause:TXT.video;
+    if(b.querySelector('span')?.textContent===desired)return;
     b.innerHTML=S?.playing?`❚❚ <span>${TXT.pause}</span>`:`▶ <span>${TXT.video}</span>`;
   }
 
