@@ -67,7 +67,7 @@
   }
 
   function drawScene(ctx,images,position,orientation,opts={}){
-    const W=720,H=900,board=600,bx=60,by=112,cell=board/8,radius=20;
+    const W=720,H=900,board=600,bx=60,by=112,cell=board/8,radius=16;
     const motion=opts.motionMove||null,highlight=opts.highlightMove||motion;
     const p=opts.progress??1,label=opts.label||'';
     const mateKing=Number.isInteger(opts.mateKing)?opts.mateKing:-1;
@@ -134,23 +134,22 @@
       if(moving)ctx.drawImage(images[moving],x+cell*.055,y+cell*.055,cell*.89,cell*.89);
     }
 
-    // Coordinates, matching the web board and respecting orientation.
     const files=orientation==='black'?'hgfedcba':'abcdefgh';
     const ranks=orientation==='black'?'12345678':'87654321';
-    ctx.font='800 11px -apple-system,BlinkMacSystemFont,Arial';
+    ctx.font='800 10.5px -apple-system,BlinkMacSystemFont,Arial';
     ctx.textBaseline='top';
     ctx.textAlign='left';
     for(let vr=0;vr<8;vr++){
       const isDark=((vr+0)&1)===1;
       ctx.fillStyle=isDark?'rgba(240,217,181,.82)':'rgba(125,91,67,.82)';
-      ctx.fillText(ranks[vr],bx+4,by+vr*cell+3);
+      ctx.fillText(ranks[vr],bx+6,by+vr*cell+5);
     }
     ctx.textBaseline='alphabetic';
     ctx.textAlign='right';
     for(let vc=0;vc<8;vc++){
       const isDark=((7+vc)&1)===1;
       ctx.fillStyle=isDark?'rgba(240,217,181,.82)':'rgba(125,91,67,.82)';
-      ctx.fillText(files[vc],bx+(vc+1)*cell-4,by+board-3);
+      ctx.fillText(files[vc],bx+(vc+1)*cell-6,by+board-5);
     }
     ctx.textAlign='left';
 
@@ -281,6 +280,12 @@
 
   const style=document.createElement('style');
   style.textContent=`
+    .boardWrap{border-radius:14px!important;}
+    .coord{opacity:.88!important;text-shadow:0 1px 0 rgba(0,0,0,.05);}
+    .coord.onLight{color:rgba(74,58,46,.84)!important;}
+    .coord.onDark{color:rgba(247,245,238,.86)!important;}
+    .coord.file{right:6px!important;bottom:4px!important;}
+    .coord.rank{left:6px!important;top:4px!important;}
     .sq.mateKing::before{
       content:"";position:absolute;inset:0;z-index:1;pointer-events:none;
       background:rgba(255,64,64,.18);
@@ -301,7 +306,6 @@
     if(!S?.positions?.length)return;
     const boardEl=document.getElementById('board');
     if(S.step!==S.positions.length-1){
-      // Reset when the replay leaves the final position so every new Play can pulse again.
       lastMateKey='';
       boardEl?.querySelectorAll('.mateKing').forEach(el=>el.classList.remove('mateKing'));
       return;
@@ -319,10 +323,23 @@
     cell.classList.add('mateKing');
   }
 
+  function syncWebCoordinateContrast(){
+    const root=document.getElementById('board');
+    if(!root)return;
+    [...root.children].forEach((sq,i)=>{
+      const vr=Math.floor(i/8),vc=i%8,isDark=((vr+vc)&1)===1;
+      sq.querySelectorAll('.coord').forEach(c=>{
+        c.classList.toggle('onDark',isDark);
+        c.classList.toggle('onLight',!isDark);
+      });
+    });
+  }
+
   const board=document.getElementById('board');
   if(board){
-    const observer=new MutationObserver(()=>requestAnimationFrame(applyWebMatePulse));
+    const observer=new MutationObserver(()=>requestAnimationFrame(()=>{syncWebCoordinateContrast();applyWebMatePulse();}));
     observer.observe(board,{childList:true});
+    syncWebCoordinateContrast();
   }
 
   const download=document.getElementById('download'),share=document.getElementById('share');
