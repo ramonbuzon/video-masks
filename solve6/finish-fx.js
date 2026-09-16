@@ -1,4 +1,4 @@
-/* MateShot finish FX v4: rounded export board + checkmate pulse + matching web finale. */
+/* MateShot finish FX v5: repeatable mate pulse + video coordinates. */
 (() => {
   const LANG=(navigator.language||'en').toLowerCase().startsWith('es')?'es':'en';
   const TXT=LANG==='es'?{
@@ -134,6 +134,26 @@
       if(moving)ctx.drawImage(images[moving],x+cell*.055,y+cell*.055,cell*.89,cell*.89);
     }
 
+    // Coordinates, matching the web board and respecting orientation.
+    const files=orientation==='black'?'hgfedcba':'abcdefgh';
+    const ranks=orientation==='black'?'12345678':'87654321';
+    ctx.font='800 11px -apple-system,BlinkMacSystemFont,Arial';
+    ctx.textBaseline='top';
+    ctx.textAlign='left';
+    for(let vr=0;vr<8;vr++){
+      const isDark=((vr+0)&1)===1;
+      ctx.fillStyle=isDark?'rgba(240,217,181,.82)':'rgba(125,91,67,.82)';
+      ctx.fillText(ranks[vr],bx+4,by+vr*cell+3);
+    }
+    ctx.textBaseline='alphabetic';
+    ctx.textAlign='right';
+    for(let vc=0;vc<8;vc++){
+      const isDark=((7+vc)&1)===1;
+      ctx.fillStyle=isDark?'rgba(240,217,181,.82)':'rgba(125,91,67,.82)';
+      ctx.fillText(files[vc],bx+(vc+1)*cell-4,by+board-3);
+    }
+    ctx.textAlign='left';
+
     ctx.restore();
 
     ctx.save();
@@ -157,7 +177,7 @@
 
   async function buildVideoPro(){
     if(!S?.positions?.length||!S?.line?.length)throw new Error('No solution');
-    const key='v4|'+S.orientation+'|'+S.start.side+'|'+S.mateN+'|'+notation(S.line,S.start.side);
+    const key='v5|'+S.orientation+'|'+S.start.side+'|'+S.mateN+'|'+notation(S.line,S.start.side);
     if(S.finishVideoBlob&&S.finishVideoKey===key)return{blob:S.finishVideoBlob,mime:S.finishVideoMime};
 
     const canvas=document.createElement('canvas');canvas.width=720;canvas.height=900;
@@ -278,14 +298,21 @@
 
   let lastMateKey='';
   function applyWebMatePulse(){
-    if(!S?.positions?.length||S.step!==S.positions.length-1)return;
+    if(!S?.positions?.length)return;
+    const boardEl=document.getElementById('board');
+    if(S.step!==S.positions.length-1){
+      // Reset when the replay leaves the final position so every new Play can pulse again.
+      lastMateKey='';
+      boardEl?.querySelectorAll('.mateKing').forEach(el=>el.classList.remove('mateKing'));
+      return;
+    }
     const finalPos=S.positions[S.positions.length-1],king=matedKingIndex(finalPos);
     if(king<0)return;
     const key=notation(S.line,S.start.side)+'|'+S.step;
     if(key===lastMateKey)return;
     lastMateKey=key;
     const vi=S.orientation==='black'?63-king:king;
-    const cell=document.getElementById('board')?.children?.[vi];
+    const cell=boardEl?.children?.[vi];
     if(!cell)return;
     cell.classList.remove('mateKing');
     void cell.offsetWidth;
