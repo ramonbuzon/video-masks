@@ -281,11 +281,17 @@
   const style=document.createElement('style');
   style.textContent=`
     .boardWrap{border-radius:14px!important;}
-    .coord{opacity:.88!important;text-shadow:0 1px 0 rgba(0,0,0,.05);}
-    .coord.onLight{color:rgba(74,58,46,.84)!important;}
-    .coord.onDark{color:rgba(247,245,238,.86)!important;}
-    .coord.file{right:6px!important;bottom:4px!important;}
-    .coord.rank{left:6px!important;top:4px!important;}
+    #board{position:relative;isolation:isolate;}
+    .coord{
+      position:absolute!important;z-index:9!important;pointer-events:none;
+      font-size:9px!important;font-weight:760!important;line-height:1!important;
+      opacity:.72!important;text-shadow:none!important;
+      -webkit-font-smoothing:antialiased;transform:translateZ(0);
+    }
+    .coord.onLight{color:rgba(92,70,52,.68)!important;}
+    .coord.onDark{color:rgba(247,245,238,.80)!important;}
+    .coord.file{right:8px!important;bottom:5px!important;}
+    .coord.rank{left:8px!important;top:5px!important;}
     .sq.mateKing::before{
       content:"";position:absolute;inset:0;z-index:1;pointer-events:none;
       background:rgba(255,64,64,.18);
@@ -326,12 +332,19 @@
   function syncWebCoordinateContrast(){
     const root=document.getElementById('board');
     if(!root)return;
-    [...root.children].forEach((sq,i)=>{
+    const cells=[...root.children];
+    cells.forEach((sq,i)=>{
       const vr=Math.floor(i/8),vc=i%8,isDark=((vr+vc)&1)===1;
       sq.querySelectorAll('.coord').forEach(c=>{
         c.classList.toggle('onDark',isDark);
         c.classList.toggle('onLight',!isDark);
       });
+    });
+    requestAnimationFrame(()=>{
+      cells.forEach(sq=>sq.querySelectorAll('.coord').forEach(c=>{
+        const r=c.getBoundingClientRect();
+        c.style.transform=`translate(${Math.round(r.left)-r.left}px,${Math.round(r.top)-r.top}px)`;
+      }));
     });
   }
 
