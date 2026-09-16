@@ -119,3 +119,12 @@
   }
   setTimeout(apply,0);
 })();
+
+/* Load the broader screenshot recognizer + longer mate solver. */
+(() => {
+  if(document.querySelector('script[data-mateshot-solver-v2]'))return;
+  const s=document.createElement('script');
+  s.src='solver-v2.js?v=1';
+  s.dataset.mateshotSolverV2='1';
+  document.head.appendChild(s);
+})();
