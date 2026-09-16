@@ -133,7 +133,7 @@
   markActiveMove((S?.step||0)-1);
 })();
 
-/* MateShot v9 bridge: expose state to the polish layer, show the puzzle statement over the moves, and download when native sharing is blocked. */
+/* MateShot v9 bridge: expose state to the polish layer and keep a compact puzzle statement over the moves. */
 (() => {
   try{ if(typeof S!=='undefined') window.S=S; }catch(_){ }
 
@@ -155,36 +155,19 @@
     const txt=sideText();
     if(k&&txt){
       k.textContent=txt;
-      k.style.setProperty('display','flex','important');
-      k.style.setProperty('align-items','center','important');
-      k.style.setProperty('gap','10px','important');
+      k.style.setProperty('display','block','important');
     }
   }
 
   const style=document.createElement('style');
   style.textContent=`
-    .solutionKicker::before{content:"";width:8px;height:8px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 5px rgba(214,255,88,.05);flex:0 0 auto;}
-    @media(max-width:760px){.solutionKicker{font-size:22px!important;line-height:1.12!important;white-space:nowrap!important;}}
-    @media(min-width:761px){.solutionKicker{font-size:27px!important;line-height:1.12!important;white-space:nowrap!important;}}
+    .solutionKicker::before{display:none!important;content:none!important;}
+    .solutionKicker{color:#9aa1aa!important;font-weight:720!important;letter-spacing:-.025em!important;text-transform:none!important;}
+    @media(max-width:760px){.solutionKicker{font-size:20px!important;line-height:1.14!important;white-space:nowrap!important;}}
+    @media(max-width:390px){.solutionKicker{font-size:18.5px!important;}}
+    @media(min-width:761px){.solutionKicker{font-size:22px!important;line-height:1.14!important;white-space:nowrap!important;}}
   `;
   document.head.appendChild(style);
-
-  let lastDownloadedBlob=null;
-  function downloadPreparedVideo(){
-    try{
-      const st=(typeof S!=='undefined'&&S)?S:window.S;
-      const blob=st?.v8VideoBlob;
-      if(!blob||blob===lastDownloadedBlob)return false;
-      lastDownloadedBlob=blob;
-      const mime=st.v8VideoMime||blob.type||'video/mp4';
-      const ext=mime.includes('mp4')?'mp4':'webm';
-      const url=URL.createObjectURL(blob),a=document.createElement('a');
-      a.href=url;a.download=`mateshot-mate-${st.mateN||'puzzle'}.${ext}`;
-      document.body.appendChild(a);a.click();a.remove();
-      setTimeout(()=>URL.revokeObjectURL(url),5000);
-      return true;
-    }catch(_){ return false; }
-  }
 
   setTimeout(()=>{
     applyStatement();
@@ -192,12 +175,13 @@
     if(result)new MutationObserver(()=>{if(result.classList.contains('active'))setTimeout(applyStatement,0);}).observe(result,{attributes:true,attributeFilter:['class']});
     const list=document.getElementById('solutionList');
     if(list)new MutationObserver(()=>setTimeout(applyStatement,0)).observe(list,{childList:true});
-
-    const toast=document.getElementById('toast');
-    if(toast)new MutationObserver(()=>{
-      const t=(toast.textContent||'').toLowerCase();
-      const blocked=t.includes('no permite compartir')||t.includes('cannot share the video directly')||t.includes('sharing is unavailable');
-      if(blocked)setTimeout(()=>downloadPreparedVideo(),80);
-    }).observe(toast,{childList:true,characterData:true,subtree:true,attributes:true,attributeFilter:['class']});
   },0);
 })();
+
+setTimeout(()=>{
+  if(document.querySelector('script[data-mateshot-polish-v9]'))return;
+  const s=document.createElement('script');
+  s.src='polish-v9.js?v=1';
+  s.dataset.mateshotPolishV9='1';
+  document.head.appendChild(s);
+},0);
