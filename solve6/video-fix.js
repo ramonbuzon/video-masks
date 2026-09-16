@@ -67,6 +67,13 @@
       ctx.fillStyle=((vr+vc)&1)?'#b98c68':'#f0d9b5';ctx.fillRect(bx+vc*cell,by+vr*cell,cell,cell);
     }
 
+    // Same source/destination highlight used by the web replay.
+    if(move){
+      const hs=canvasSquare(move.from,orientation,bx,by,cell),ht=canvasSquare(move.to,orientation,bx,by,cell);
+      ctx.fillStyle='rgba(214,255,88,.24)';ctx.fillRect(hs.x,hs.y,cell,cell);
+      ctx.fillStyle='rgba(214,255,88,.43)';ctx.fillRect(ht.x,ht.y,cell,cell);
+    }
+
     const b=position.b;
     const moving=move?b[move.from]:null;
     for(let i=0;i<64;i++){
@@ -77,6 +84,7 @@
     }
 
     if(move){
+      // Keep a captured piece visible for most of the travel, then remove it just before arrival.
       const captured=b[move.to];
       if(captured && p<0.82){
         const z=canvasSquare(move.to,orientation,bx,by,cell);
@@ -116,6 +124,7 @@
     drawFrame(ctx,images,S.positions[0],S.orientation,null,1,'');
     await sleep(300);
 
+    // Shorter 4:5 social export. MediaRecorder records in real time, so shortening the replay also shortens generation time.
     const moveMs=420,holdMs=90;
     for(let i=0;i<S.line.length;i++){
       const frames=Math.max(7,Math.round(moveMs/1000*fps));
@@ -125,11 +134,13 @@
         drawFrame(ctx,images,before,S.orientation,mv,p,moveLabel);
         await sleep(1000/fps);
       }
-      drawFrame(ctx,images,S.positions[i+1],S.orientation,null,1,moveLabel);
+      // Keep the last-move highlight visible during the short hold.
+      drawFrame(ctx,images,S.positions[i],S.orientation,mv,1,moveLabel);
       await sleep(holdMs);
     }
 
-    drawFrame(ctx,images,S.positions[S.positions.length-1],S.orientation,null,1,TXT.checkmate);
+    // Keep the mating move highlighted on the final frame as well.
+    drawFrame(ctx,images,S.positions[S.positions.length-2],S.orientation,S.line[S.line.length-1],1,TXT.checkmate);
     await sleep(450);
     rec.stop();await stopped;stream.getTracks().forEach(x=>x.stop());
 
@@ -177,6 +188,7 @@
   if(download) download.onclick=downloadFast;
   if(share) share.onclick=shareFast;
 
+  // Warm the SVG cache only after the first solution appears, so clicking Download feels immediate.
   const result=document.getElementById('result');
   if(result){
     const observer=new MutationObserver(()=>{if(result.classList.contains('active'))preloadPiecesFast().catch(()=>{});});
