@@ -1,6 +1,7 @@
 /* MateShot production bootstrap.
-   Loads the proven source modules as text and executes them as ONE classic script.
-   This avoids html-preview isolating globals between separate script tags. */
+   Loads the proven source modules as text and executes them as one classic script.
+   Keeps the home screen hidden until localization and the runtime are ready,
+   preventing flashes of legacy copy or legacy logo styles. */
 (() => {
   'use strict';
 
@@ -8,12 +9,14 @@
   const pickButton = document.querySelector('.pick');
   const uploadLabel = document.querySelector('[data-i18n="upload"]');
   const originalUploadText = uploadLabel ? uploadLabel.textContent : 'Upload screenshot';
+  const es = (navigator.language || 'en').toLowerCase().startsWith('es');
+
   if (picker) picker.disabled = true;
   if (pickButton) {
     pickButton.style.opacity = '.62';
     pickButton.style.pointerEvents = 'none';
   }
-  if (uploadLabel) uploadLabel.textContent = (navigator.language || 'en').toLowerCase().startsWith('es') ? 'Preparando MateShot…' : 'Preparing MateShot…';
+  if (uploadLabel) uploadLabel.textContent = es ? 'Preparando MateShot…' : 'Preparing MateShot…';
 
   const CDN = 'https://cdn.jsdelivr.net/gh/ramonbuzon/video-masks';
   const CORE_COMMIT = 'a28d28a36fd3610b13e6ad1f5d6f9da8a09a326b';
@@ -39,6 +42,27 @@
     return res.text();
   }
 
+  function applyFinalHomeCopy() {
+    const hero = document.querySelector('.heroText');
+    const microPrimary = document.querySelector('.microPrimary');
+    const microLimit = document.querySelector('.microLimit');
+    if (hero) {
+      hero.textContent = es
+        ? 'MateShot extrae la información del puzzle y genera una solución animada que podrás consultar y compartir.'
+        : 'MateShot extracts the puzzle information and generates an animated solution you can review and share.';
+    }
+    if (microPrimary) {
+      microPrimary.textContent = es
+        ? 'Sin montar el tablero. Sin notación. Solo la captura.'
+        : 'No board setup. No notation. Just the screenshot.';
+    }
+    if (microLimit) {
+      microLimit.textContent = es
+        ? 'Problemas de mate de hasta 8 jugadas.'
+        : 'Mate puzzles up to 8 moves.';
+    }
+  }
+
   async function boot() {
     try {
       const code = [];
@@ -47,8 +71,6 @@
         if (i === 0) code.push(bridge);
       }
 
-      // polish-v12 used to inject solver-v3 as another script. It is already
-      // part of this bundle, so this marker prevents that legacy loader.
       const marker = document.createElement('script');
       marker.type = 'application/json';
       marker.dataset.mateshotSolverV3 = '1';
@@ -60,23 +82,22 @@
       bundle.textContent = code.join('\n\n') + '\n//# sourceURL=mateshot-app.js';
       document.body.appendChild(bundle);
 
-      // Explicitly verify the critical path before enabling upload.
       const ready = typeof window.analyze === 'function' && typeof window.fileData === 'function' && window.S;
       if (!ready) throw new Error('MateShot core did not initialize correctly.');
+
+      applyFinalHomeCopy();
 
       if (picker) picker.disabled = false;
       if (pickButton) {
         pickButton.style.opacity = '';
         pickButton.style.pointerEvents = '';
       }
-      if (uploadLabel) {
-        const es = (navigator.language || 'en').toLowerCase().startsWith('es');
-        uploadLabel.textContent = es ? 'Subir captura' : originalUploadText;
-      }
-      document.documentElement.dataset.mateshotReady = '1';
+      if (uploadLabel) uploadLabel.textContent = es ? 'Subir captura' : originalUploadText;
+
+      requestAnimationFrame(() => {
+        document.documentElement.dataset.mateshotReady = '1';
+      });
     } catch (err) {
-      // Handled boot failure: keep the UI usable and avoid cascading exceptions.
-      const es = (navigator.language || 'en').toLowerCase().startsWith('es');
       if (uploadLabel) uploadLabel.textContent = es ? 'Recargar MateShot' : 'Reload MateShot';
       if (pickButton) {
         pickButton.style.opacity = '1';
@@ -85,7 +106,10 @@
         pickButton.addEventListener('click', () => location.reload(), {once:true});
       }
       const micro = document.querySelector('.microcopy');
-      if (micro) micro.textContent = es ? 'No se ha podido iniciar la app. Recarga para intentarlo de nuevo.' : 'The app could not start. Reload to try again.';
+      if (micro) micro.textContent = es
+        ? 'No se ha podido iniciar la app. Recarga para intentarlo de nuevo.'
+        : 'The app could not start. Reload to try again.';
+      document.documentElement.dataset.mateshotReady = 'error';
       console.warn('MateShot boot issue:', err && err.message ? err.message : err);
     }
   }
