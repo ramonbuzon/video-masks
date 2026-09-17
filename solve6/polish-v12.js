@@ -122,9 +122,9 @@
 
 /* Load the broader screenshot recognizer + longer mate solver. */
 (() => {
-  if(document.querySelector('script[data-mateshot-solver-v2]'))return;
+  if(document.querySelector('script[data-mateshot-solver-v3]'))return;
   const s=document.createElement('script');
-  s.src='solver-v2.js?v=1';
-  s.dataset.mateshotSolverV2='1';
+  s.src='solver-v3.js?v=2';
+  s.dataset.mateshotSolverV3='1';
   document.head.appendChild(s);
 })();
