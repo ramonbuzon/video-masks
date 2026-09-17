@@ -21,6 +21,7 @@
   const CDN = 'https://cdn.jsdelivr.net/gh/ramonbuzon/video-masks';
   const CORE_COMMIT = 'a28d28a36fd3610b13e6ad1f5d6f9da8a09a326b';
   const MODULE_COMMIT = '0c9d38c907f086d11d310047f9c863b47380c534';
+  const ML_COMMIT = '567873bb50874c0ca03b4c64b04f5a107ae900b1';
   const sources = [
     `${CDN}@${CORE_COMMIT}/solve5/app.js`,
     `${CDN}@${MODULE_COMMIT}/solve6/solver-v3.js`,
@@ -31,7 +32,8 @@
     `${CDN}@${MODULE_COMMIT}/solve6/replay-web.js`,
     `${CDN}@${MODULE_COMMIT}/solve6/polish-v10.js`,
     `${CDN}@${MODULE_COMMIT}/solve6/polish-v11.js`,
-    `${CDN}@${MODULE_COMMIT}/solve6/polish-v12.js`
+    `${CDN}@${MODULE_COMMIT}/solve6/polish-v12.js`,
+    `${CDN}@${ML_COMMIT}/mateshot/recognition-ml.js`
   ];
 
   const bridge = `\n;(() => {\n  const names = [\n    '$','SCREENS','GLYPH','TYPES','TEMPLATE64','TEMPLATES','S',\n    'show','prog','wait','fileData','loadImg','median','detectBoard',\n    'largestComponent','normalizeMask','iou','scanBoard','cellsBoard',\n    'rotateBoard','boardKey','validShape','preferredOrientation','pc','pt',\n    'other','rc','inside','sq','kingIndex','attacked','inCheck','pseudoMoves',\n    'makeMove','legalMoves','givesCheck','posKey','forcedMate','findMate',\n    'solveCells','fenBoard','annotate','notation','renderBoard','stopPlay',\n    'gotoStep','playLoop','togglePlay','analyze'\n  ];\n  for (const name of names) {\n    try { window[name] = eval(name); } catch (_) {}\n  }\n})();\n`;
