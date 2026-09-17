@@ -21,13 +21,19 @@
   const CORE_COMMIT = 'a28d28a36fd3610b13e6ad1f5d6f9da8a09a326b';
   const MODULE_COMMIT = '0c9d38c907f086d11d310047f9c863b47380c534';
   const ML_COMMIT = '567873bb50874c0ca03b4c64b04f5a107ae900b1';
+  const GRID_COMMIT = 'feec4165e04a608ea045a4af0aee247023885204';
+  const INTEGRITY_COMMIT = 'c1cf9fbed1a929a1ab1389506beba86cbc84d1af';
   const REPAIR_COMMIT = '35ba4b2d665ed18b36272b5dcee9da17246ddb52';
+  const OCCUPANCY_COMMIT = '746bb6a4d0db0ed001ef50e7ca7f7a8533d5721a';
   const sources = [
     `${CDN}@${CORE_COMMIT}/solve5/app.js`,
     `${CDN}@${MODULE_COMMIT}/solve6/solver-v3.js`,
     `${CDN}@${MODULE_COMMIT}/solve6/recognition-v3.js`,
+    `${CDN}@${GRID_COMMIT}/mateshot/detector-grid.js`,
     `${CDN}@${ML_COMMIT}/mateshot/recognition-ml.js`,
+    `${CDN}@${INTEGRITY_COMMIT}/mateshot/integrity-guard.js`,
     `${CDN}@${REPAIR_COMMIT}/mateshot/recognition-repair.js`,
+    `${CDN}@${OCCUPANCY_COMMIT}/mateshot/occupancy-recover.js`,
     `${CDN}@${MODULE_COMMIT}/solve6/enhance.js`,
     `${CDN}@${MODULE_COMMIT}/solve6/video-fix.js`,
     `${CDN}@${MODULE_COMMIT}/solve6/finish-fx.js`,
