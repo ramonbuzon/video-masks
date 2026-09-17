@@ -53,6 +53,7 @@
     for(let r=0;r<8;r++)for(let c=0;c<8;c++){
       const x0=Math.round(c*cell),y0=Math.round(r*cell),x1=Math.round((c+1)*cell),y1=Math.round((r+1)*cell);
       const w=x1-x0,h=y1-y0,rs=[],gs=[],bs=[];
+
       for(let yy=2;yy<h;yy+=4)for(let xx=2;xx<w;xx+=4){
         const i=((y0+yy)*size+x0+xx)*4;rs.push(px[i]);gs.push(px[i+1]);bs.push(px[i+2]);
       }
@@ -102,4 +103,26 @@
     try{b=printedScan(img,rect);}catch(_){b=[];}
     return quality(b)>quality(a)?b:a;
   };
+
+  // iOS/Safari can occasionally return from the photo picker without the old bubble listener firing reliably
+  // inside the html-preview wrapper. Capture the change at the input itself and hand it directly to MateShot.
+  const picker=document.getElementById('picker');
+  if(picker){
+    picker.addEventListener('change',async e=>{
+      const f=e.target.files&&e.target.files[0];
+      if(!f)return;
+      e.stopImmediatePropagation();
+      try{
+        const u=await fileData(f);
+        e.target.value='';
+        await analyze(u);
+      }catch(err){
+        console.error(err);
+        try{
+          document.getElementById('errorText').textContent='No he podido abrir esta imagen. Prueba otra captura.';
+          show('error');
+        }catch(_){ }
+      }
+    },true);
+  }
 })();
