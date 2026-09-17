@@ -1,6 +1,6 @@
 /* MateShot production bootstrap.
    Loads the proven source modules as text and executes them as one classic script.
-   Keeps the home screen hidden until localization and the runtime are ready,
+   Keeps the home screen hidden until localization and runtime are ready,
    preventing flashes of legacy copy or legacy logo styles. */
 (() => {
   'use strict';
@@ -8,7 +8,7 @@
   const picker = document.getElementById('picker');
   const pickButton = document.querySelector('.pick');
   const uploadLabel = document.querySelector('[data-i18n="upload"]');
-  const originalUploadText = uploadLabel ? uploadLabel.textContent : 'Upload screenshot';
+  const originalUploadText = uploadLabel ? uploadLabel.textContent : 'Upload Screenshot';
   const es = (navigator.language || 'en').toLowerCase().startsWith('es');
 
   if (picker) picker.disabled = true;
@@ -43,24 +43,25 @@
   }
 
   function applyFinalHomeCopy() {
-    const hero = document.querySelector('.heroText');
-    const microPrimary = document.querySelector('.microPrimary');
-    const microLimit = document.querySelector('.microLimit');
-    if (hero) {
-      hero.textContent = es
-        ? 'MateShot extrae la información del puzzle y genera una solución animada que podrás consultar y compartir.'
-        : 'MateShot extracts the puzzle information and generates an animated solution you can review and share.';
+    const eyebrow = document.querySelector('[data-i18n="eyebrow"]');
+    const hero1 = document.querySelector('[data-i18n="hero1"]');
+    const hero2 = document.querySelector('[data-i18n="hero2"]');
+    const heroText = document.querySelector('[data-i18n="heroText"]');
+    const homeCore = document.querySelector('.homeCore');
+    const microcopy = document.querySelector('.microcopy');
+
+    if (homeCore) homeCore.style.width = 'min(100%, 600px)';
+    if (microcopy) microcopy.remove();
+
+    if (eyebrow) eyebrow.textContent = es ? 'De screenshot a solución' : 'From screenshot to solution';
+    if (hero1) hero1.textContent = es ? 'Sube un problema de ajedrez.' : 'Upload a chess problem.';
+    if (hero2) hero2.textContent = es ? 'Mira su solución.' : 'See its solution.';
+    if (heroText) {
+      heroText.textContent = es
+        ? 'MateShot analiza cualquier imagen que contenga un problema de mate de ajedrez de hasta 8 jugadas, y muestra su solución animada.'
+        : 'MateShot analyzes any image containing a chess mate problem of up to 8 moves and shows its animated solution.';
     }
-    if (microPrimary) {
-      microPrimary.textContent = es
-        ? 'Sin montar el tablero. Sin notación. Solo la captura.'
-        : 'No board setup. No notation. Just the screenshot.';
-    }
-    if (microLimit) {
-      microLimit.textContent = es
-        ? 'Problemas de mate de hasta 8 jugadas.'
-        : 'Mate puzzles up to 8 moves.';
-    }
+    if (uploadLabel) uploadLabel.textContent = es ? 'Subir Screenshot' : 'Upload Screenshot';
   }
 
   async function boot() {
@@ -92,7 +93,6 @@
         pickButton.style.opacity = '';
         pickButton.style.pointerEvents = '';
       }
-      if (uploadLabel) uploadLabel.textContent = es ? 'Subir captura' : originalUploadText;
 
       requestAnimationFrame(() => {
         document.documentElement.dataset.mateshotReady = '1';
@@ -105,10 +105,6 @@
         pickButton.setAttribute('for','');
         pickButton.addEventListener('click', () => location.reload(), {once:true});
       }
-      const micro = document.querySelector('.microcopy');
-      if (micro) micro.textContent = es
-        ? 'No se ha podido iniciar la app. Recarga para intentarlo de nuevo.'
-        : 'The app could not start. Reload to try again.';
       document.documentElement.dataset.mateshotReady = 'error';
       console.warn('MateShot boot issue:', err && err.message ? err.message : err);
     }
