@@ -128,3 +128,12 @@
   s.dataset.mateshotSolverV3='1';
   document.head.appendChild(s);
 })();
+
+/* Reliable screenshot picker handoff for desktop, iPhone and preview webviews. */
+(() => {
+  if(document.querySelector('script[data-mateshot-upload-fix]'))return;
+  const s=document.createElement('script');
+  s.src='upload-fix.js?v=3';
+  s.dataset.mateshotUploadFix='1';
+  document.head.appendChild(s);
+})();
