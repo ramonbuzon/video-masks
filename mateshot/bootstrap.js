@@ -25,6 +25,7 @@
   const INTEGRITY_COMMIT = 'c1cf9fbed1a929a1ab1389506beba86cbc84d1af';
   const REPAIR_COMMIT = '35ba4b2d665ed18b36272b5dcee9da17246ddb52';
   const OCCUPANCY_COMMIT = '746bb6a4d0db0ed001ef50e7ca7f7a8533d5721a';
+  const FINAL_GUARD_COMMIT = '384402dd6d8ff036a6e8cc624a0cd9be93d53ae9';
   const sources = [
     `${CDN}@${CORE_COMMIT}/solve5/app.js`,
     `${CDN}@${MODULE_COMMIT}/solve6/solver-v3.js`,
@@ -40,7 +41,8 @@
     `${CDN}@${MODULE_COMMIT}/solve6/replay-web.js`,
     `${CDN}@${MODULE_COMMIT}/solve6/polish-v10.js`,
     `${CDN}@${MODULE_COMMIT}/solve6/polish-v11.js`,
-    `${CDN}@${MODULE_COMMIT}/solve6/polish-v12.js`
+    `${CDN}@${MODULE_COMMIT}/solve6/polish-v12.js`,
+    `${CDN}@${FINAL_GUARD_COMMIT}/mateshot/final-guard.js`
   ];
 
   const bridge = `\n;(() => {\n  const names = [\n    '$','SCREENS','GLYPH','TYPES','TEMPLATE64','TEMPLATES','S',\n    'show','prog','wait','fileData','loadImg','median','detectBoard',\n    'largestComponent','normalizeMask','iou','scanBoard','cellsBoard',\n    'rotateBoard','boardKey','validShape','preferredOrientation','pc','pt',\n    'other','rc','inside','sq','kingIndex','attacked','inCheck','pseudoMoves',\n    'makeMove','legalMoves','givesCheck','posKey','forcedMate','findMate',\n    'solveCells','fenBoard','annotate','notation','renderBoard','stopPlay',\n    'gotoStep','playLoop','togglePlay','analyze'\n  ];\n  for (const name of names) {\n    try { window[name] = eval(name); } catch (_) {}\n  }\n})();\n`;
