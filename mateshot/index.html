@@ -121,138 +121,2477 @@ h1{margin:0;font-size:clamp(40px,8.3vw,72px);line-height:.94;letter-spacing:-.06
 <div id="toast" class="toast"></div>
 <div class="legal">Cburnett pieces © Colin M.L. Burnett</div>
 </div>
+
 <script>
-/* MateShot production bootstrap.
-   Loads the proven source modules as text and executes them as one classic script.
-   Keeps the home screen hidden until localization and runtime are ready,
-   preventing flashes of legacy copy or legacy logo styles. */
+(() => {
+  const langs=[...(navigator.languages||[]),navigator.language,(Intl.DateTimeFormat().resolvedOptions().locale||'')]
+    .filter(Boolean).map(x=>String(x).toLowerCase());
+  const es=langs.some(x=>/^es(?:-|$)/.test(x));
+  window.MATESHOT_ES=es;
+  document.documentElement.lang=es?'es':'en';
+  const set=(sel,text)=>{const el=document.querySelector(sel);if(el)el.textContent=text;};
+  set('[data-i18n="eyebrow"]',es?'De screenshot a solución':'From screenshot to solution');
+  set('[data-i18n="hero1"]',es?'Sube un problema de ajedrez.':'Upload a chess problem.');
+  set('[data-i18n="hero2"]',es?'Mira su solución.':'See its solution.');
+  set('[data-i18n="heroText"]',es
+    ?'MateShot analiza cualquier imagen que contenga un problema de mate de ajedrez de hasta 8 jugadas, y muestra su solución animada.'
+    :'MateShot analyzes any image containing a chess mate problem of up to 8 moves and shows its animated solution.');
+  set('[data-i18n="upload"]',es?'Preparando MateShot…':'Preparing MateShot…');
+  const core=document.querySelector('.homeCore'); if(core)core.style.width='min(100%, 600px)';
+  const micro=document.querySelector('.microcopy'); if(micro)micro.remove();
+  const picker=document.getElementById('picker'); if(picker)picker.disabled=true;
+  const pick=document.querySelector('.pick'); if(pick){pick.style.opacity='.62';pick.style.pointerEvents='none';}
+  document.documentElement.dataset.mateshotReady='1';
+})();
+</script>
+<script id="mateshot-app">
+
+/* ===== solve5/app.js ===== */
+/* Solve prototype: fully local board detection, Chess.com-style recognition and mate search. */
+const $=id=>document.getElementById(id);
+const SCREENS=['home','processing','result','error'];
+const GLYPH={K:'♔',Q:'♕',R:'♖',B:'♗',N:'♘',P:'♙',k:'♚',q:'♛',r:'♜',b:'♝',n:'♞',p:'♟'};
+const TYPES=['k','q','r','b','n','p'];
+const TEMPLATE64={
+ r:'AAAAAAAAAAAAB+AAAOfnAAHn54AB9++AAf//gAH//4AB//+AAf//gAD//wAAf/4AAH/8AAB//gAAf/4AAH/+AAB//gAAf/4AAH/+AAB//gAA//4AAP//AAD//wAB//+AA///wAf//+AH///gB///4Af//+AH///gAAAAAAAAAAA=',
+ q:'AAAAAAAAAAAAODwAAH5+AAD+fgAA/v4AAH5+AAw8fDAfPnj4Pz58/D8+/Pw/P/z8Hz/9+A+///AP///gB///4Af//8AD///AA///wAH//4AB//+AAP//AAD//wAA//8AAf//gAP//8AD///AB///wAf//8AH///AAAAAAAAAAAA=',
+ b:'AAAAAAAAAAAAA4AAAAfgAAAH4AAAB8AAAAeAAAAPkAAAH7gAAD88AAA/fAAAf34AAH5/AAD+fwAA/n8AAP5/AAD//wAA//+AAP//AAD//wAA//8AAH/+AAB//gAAP/wAAf//gAH//4AD///AA///wAP//8AD///AAAAAAAAAAAA=',
+ n:'AAAAAAAAAAAAOAAAADwAAAA/AAAAf8AAAP/wAAH/+AAB//wAAf/+AAP//wAD//8AB///AA///4AP//+AH/3/gB/z/4Afx/+AD4//gAAf/4AAP/+AAD//AAB//wAAf/8AAe/3kAP//+AD///wA///wAP//8AD///AAAAAAAAAAAA=',
+ k:'AAAAAAAAAAAAB8AAAAfAAAAf8AAAH/AAAB/wAAAf8AAAB8AAA///gA///+Af///wH///8D////g////4P4/j+D+Pw/g/j8f4H8/H8B////AP///gB///gAP//4AB//8AAf//AAN//YAH//+AB///wAf//8AH///AAAAAAAAAAAA=',
+ p:'AAAAAAAAAAAAA8AAAA/wAAAf+AAAH/gAAD/8AAA//AAAP/wAAD/8AAAf+AAAH/gAAB/4AAA3/gAAf/4AAD/+AAA//AAAD/AAAA/wAAAf+AAAH/wAAD/+AAB//gAB//+AA///wAP//8AH///gB///4Af//+AH///gAAAAAAAAAAA='
+};
+const TEMPLATES={};
+for(const [t,s] of Object.entries(TEMPLATE64)){const raw=atob(s),a=new Uint8Array(1024);for(let i=0;i<1024;i++)a[i]=(raw.charCodeAt(i>>3)>>(7-(i&7)))&1;TEMPLATES[t]=a;}
+let S={dataUrl:null,img:null,rect:null,cells:null,start:null,line:[],positions:[],step:0,playing:false,timer:null,mateN:0,orientation:'black',debug:''};
+function show(id){SCREENS.forEach(x=>$(x).classList.toggle('active',x===id));}
+function prog(v,title,text){$('bar').style.width=Math.max(4,Math.min(100,v))+'%';if(title)$('procTitle').textContent=title;if(text)$('procText').textContent=text;}
+function wait(ms){return new Promise(r=>setTimeout(r,ms));}
+function fileData(file){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=rej;r.readAsDataURL(file);});}
+function loadImg(url){return new Promise((res,rej)=>{const im=new Image();im.onload=()=>res(im);im.onerror=rej;im.src=url;});}
+function median(a){const b=[...a].sort((x,y)=>x-y),n=b.length;return n?(n&1?b[n>>1]:(b[(n>>1)-1]+b[n>>1])/2):0;}
+
+function detectBoard(img){
+ const maxW=480,W0=img.naturalWidth||img.width,H0=img.naturalHeight||img.height,scale=Math.min(1,maxW/W0),W=Math.round(W0*scale),H=Math.round(H0*scale);
+ if(Math.abs(W-H)/Math.max(W,H)<.06)return{x:0,y:0,s:Math.min(W0,H0)};
+ const cv=document.createElement('canvas');cv.width=W;cv.height=H;const ctx=cv.getContext('2d',{willReadFrequently:true});ctx.drawImage(img,0,0,W,H);const p=ctx.getImageData(0,0,W,H).data;
+ const sx=new Float64Array(W-1),sy=new Float64Array(H-1);const threshold=30;
+ for(let y=0;y<H;y++)for(let x=0;x<W-1;x++){let d=0;const i=(y*W+x)*4,j=i+4;d=(Math.abs(p[j]-p[i])+Math.abs(p[j+1]-p[i+1])+Math.abs(p[j+2]-p[i+2]))/3;if(d>threshold)sx[x]++;sx[x]+=d*.03;}
+ for(let y=0;y<H-1;y++)for(let x=0;x<W;x++){let d=0;const i=(y*W+x)*4,j=((y+1)*W+x)*4;d=(Math.abs(p[j]-p[i])+Math.abs(p[j+1]-p[i+1])+Math.abs(p[j+2]-p[i+2]))/3;if(d>threshold)sy[y]++;sy[y]+=d*.03;}
+ function peaks(a,n,minDist){const ids=Array.from(a.keys()).sort((u,v)=>a[v]-a[u]),out=[];for(const i of ids){if(out.every(j=>Math.abs(i-j)>=minDist)){out.push(i);if(out.length>=n)break;}}return out;}
+ const px=peaks(sx,20,8),py=peaks(sy,30,8);let best=null;
+ for(let ia=0;ia<px.length;ia++)for(let ib=ia+1;ib<px.length;ib++){let xa=Math.min(px[ia],px[ib]),xb=Math.max(px[ia],px[ib]),dx=xb-xa;if(dx<W*.45)continue;for(let ja=0;ja<py.length;ja++)for(let jb=ja+1;jb<py.length;jb++){let ya=Math.min(py[ja],py[jb]),yb=Math.max(py[ja],py[jb]),dy=yb-ya,mis=Math.abs(dx-dy);if(mis>Math.max(8,dx*.04))continue;let sc=sx[xa]+sx[xb]+sy[ya]+sy[yb]-mis*30;if(!best||sc>best.sc)best={sc,xa,xb,ya,yb};}}
+ if(!best)throw new Error('No encuentro un tablero 8×8 claro en la captura.');
+ const side=Math.round(((best.xb-best.xa)+(best.yb-best.ya))/2),cx=(best.xa+best.xb)/2,cy=(best.ya+best.yb)/2,inv=1/scale;
+ return{x:Math.max(0,Math.round((cx-side/2)*inv)),y:Math.max(0,Math.round((cy-side/2)*inv)),s:Math.round(side*inv)};
+}
+
+function largestComponent(mask,w,h){const seen=new Uint8Array(w*h);let best=[];const stack=[];for(let y=0;y<h;y++)for(let x=0;x<w;x++){let root=y*w+x;if(!mask[root]||seen[root])continue;let pts=[];stack.push(root);seen[root]=1;while(stack.length){let z=stack.pop();pts.push(z);let yy=(z/w)|0,xx=z-yy*w;for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){if(!dx&&!dy)continue;let nx=xx+dx,ny=yy+dy;if(nx<0||nx>=w||ny<0||ny>=h)continue;let q=ny*w+nx;if(mask[q]&&!seen[q]){seen[q]=1;stack.push(q);}}}if(pts.length>best.length)best=pts;}const out=new Uint8Array(w*h);for(const z of best)out[z]=1;return{mask:out,pts:best};}
+function normalizeMask(mask,w,h){let x0=w,y0=h,x1=-1,y1=-1;for(let y=0;y<h;y++)for(let x=0;x<w;x++)if(mask[y*w+x]){if(x<x0)x0=x;if(x>x1)x1=x;if(y<y0)y0=y;if(y>y1)y1=y;}const out=new Uint8Array(1024);if(x1<0)return out;let bw=x1-x0+1,bh=y1-y0+1,scale=Math.min(28/bw,28/bh),nw=Math.max(1,Math.round(bw*scale)),nh=Math.max(1,Math.round(bh*scale)),ox=((32-nw)/2)|0,oy=((32-nh)/2)|0;for(let yy=0;yy<nh;yy++)for(let xx=0;xx<nw;xx++){let sx=x0+Math.min(bw-1,Math.floor((xx+.5)/nw*bw)),sy=y0+Math.min(bh-1,Math.floor((yy+.5)/nh*bh));if(mask[sy*w+sx])out[(oy+yy)*32+ox+xx]=1;}return out;}
+function iou(a,b){let inter=0,uni=0;for(let i=0;i<1024;i++){let x=a[i],y=b[i];if(x&&y)inter++;if(x||y)uni++;}return uni?inter/uni:0;}
+function scanBoard(img,rect){
+ const size=800,cv=document.createElement('canvas');cv.width=size;cv.height=size;const ctx=cv.getContext('2d',{willReadFrequently:true});ctx.drawImage(img,rect.x,rect.y,rect.s,rect.s,0,0,size,size);const px=ctx.getImageData(0,0,size,size).data,cell=size/8,cells=[];
+ for(let r=0;r<8;r++)for(let c=0;c<8;c++){const x0=Math.round(c*cell),y0=Math.round(r*cell),x1=Math.round((c+1)*cell),y1=Math.round((r+1)*cell),w=x1-x0,h=y1-y0,inset=Math.max(3,Math.round(Math.min(w,h)*.07)),samples=[];
+   const corners=[[inset,inset],[w-inset-1,inset],[inset,h-inset-1],[w-inset-1,h-inset-1]];for(const [cx,cy] of corners)for(let dy=-2;dy<=2;dy++)for(let dx=-2;dx<=2;dx++){let xx=Math.max(0,Math.min(w-1,cx+dx))+x0,yy=Math.max(0,Math.min(h-1,cy+dy))+y0,i=(yy*size+xx)*4;samples.push([px[i],px[i+1],px[i+2]]);}const bg=[median(samples.map(s=>s[0])),median(samples.map(s=>s[1])),median(samples.map(s=>s[2]))],mask=new Uint8Array(w*h);let bgL=.299*bg[0]+.587*bg[1]+.114*bg[2];
+   for(let yy=0;yy<h;yy++)for(let xx=0;xx<w;xx++){let i=((y0+yy)*size+x0+xx)*4,dr=px[i]-bg[0],dg=px[i+1]-bg[1],db=px[i+2]-bg[2],dist=Math.sqrt(dr*dr+dg*dg+db*db)/441.67;if(dist>.13)mask[yy*w+xx]=1;}
+   const comp=largestComponent(mask,w,h);if(comp.pts.length<w*h*.035){cells.push({empty:true,r,c});continue;}const nm=normalizeMask(comp.mask,w,h),ranked=TYPES.map(t=>({t,score:iou(nm,TEMPLATES[t])})).sort((a,b)=>b.score-a.score);if(ranked[0].score<.25){cells.push({empty:true,r,c});continue;}
+   let light=0,dark=0;for(const z of comp.pts){let yy=(z/w)|0,xx=z-yy*w,i=((y0+yy)*size+x0+xx)*4,L=.299*px[i]+.587*px[i+1]+.114*px[i+2];if(L>bgL+25)light++;else if(L<bgL-25)dark++;}const color=light>dark*.4?'w':'b';cells.push({empty:false,r,c,color,alts:ranked.slice(0,3)});
+ }
+ return cells;
+}
+function cellsBoard(cells,useAlt={}){const b=Array(64).fill(null);for(let i=0;i<cells.length;i++){const c=cells[i];if(c.empty)continue;let ai=useAlt[i]||0,t=c.alts[Math.min(ai,c.alts.length-1)].t;b[c.r*8+c.c]=c.color==='w'?t.toUpperCase():t;}return b;}
+function rotateBoard(b){return Array.from({length:64},(_,i)=>b[63-i]);}
+function boardKey(b){return b.map(x=>x||'.').join('');}
+function validShape(b){return b.filter(x=>x==='K').length===1&&b.filter(x=>x==='k').length===1&&b.filter(Boolean).length<=32;}
+function preferredOrientation(cells){let topW=0,topB=0,botW=0,botB=0;for(const c of cells){if(c.empty)continue;if(c.r<2)c.color==='w'?topW++:topB++;if(c.r>5)c.color==='w'?botW++:botB++;}return botB>botW&&topW>topB?'black':botW>botB&&topB>topW?'white':'black';}
+
+const pc=x=>x?(x===x.toUpperCase()?'w':'b'):null,pt=x=>x?x.toLowerCase():null,other=s=>s==='w'?'b':'w';
+const rc=i=>[(i/8)|0,i%8],inside=(r,c)=>r>=0&&r<8&&c>=0&&c<8;
+function sq(i){let [r,c]=rc(i);return'abcdefgh'[c]+(8-r);}
+function kingIndex(b,side){const k=side==='w'?'K':'k';return b.indexOf(k);}
+function attacked(b,target,by){const [r,c]=rc(target),pawn=by==='w'?'P':'p';let pr=r+(by==='w'?1:-1);for(const dc of[-1,1])if(inside(pr,c+dc)&&b[pr*8+c+dc]===pawn)return true;const n=by==='w'?'N':'n';for(const[dR,dC]of[[-2,-1],[-2,1],[-1,-2],[-1,2],[1,-2],[1,2],[2,-1],[2,1]]){let rr=r+dR,cc=c+dC;if(inside(rr,cc)&&b[rr*8+cc]===n)return true;}const k=by==='w'?'K':'k';for(let dr=-1;dr<=1;dr++)for(let dc=-1;dc<=1;dc++){if(!dr&&!dc)continue;let rr=r+dr,cc=c+dc;if(inside(rr,cc)&&b[rr*8+cc]===k)return true;}const dirs=[[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]];for(let di=0;di<dirs.length;di++){let[dr,dc]=dirs[di],rr=r+dr,cc=c+dc;while(inside(rr,cc)){let p=b[rr*8+cc];if(p){if(pc(p)===by){let t=pt(p);if(t==='q'||(di<4&&t==='r')||(di>=4&&t==='b'))return true;}break;}rr+=dr;cc+=dc;}}return false;}
+function inCheck(pos,side=pos.side){let k=kingIndex(pos.b,side);return k<0||attacked(pos.b,k,other(side));}
+function pseudoMoves(pos){const b=pos.b,side=pos.side,m=[];for(let from=0;from<64;from++){let p=b[from];if(!p||pc(p)!==side)continue;let t=pt(p),[r,c]=rc(from);const add=(to,prom=null)=>{let cap=b[to];if(cap&&pt(cap)==='k')return;m.push({from,to,piece:p,capture:cap||null,promotion:prom});};if(t==='p'){let dir=side==='w'?-1:1,nr=r+dir;if(inside(nr,c)&&!b[nr*8+c]){if(nr===0||nr===7){for(const q of['q','r','b','n'])add(nr*8+c,q);}else add(nr*8+c);let sr=side==='w'?6:1,nr2=r+2*dir;if(r===sr&&!b[nr2*8+c])add(nr2*8+c);}for(const dc of[-1,1]){let rr=r+dir,cc=c+dc;if(!inside(rr,cc))continue;let to=rr*8+cc;if(b[to]&&pc(b[to])!==side){if(rr===0||rr===7){for(const q of['q','r','b','n'])add(to,q);}else add(to);}}}else if(t==='n'){for(const[dr,dc]of[[-2,-1],[-2,1],[-1,-2],[-1,2],[1,-2],[1,2],[2,-1],[2,1]]){let rr=r+dr,cc=c+dc;if(inside(rr,cc)&&(!b[rr*8+cc]||pc(b[rr*8+cc])!==side))add(rr*8+cc);}}else if(t==='k'){for(let dr=-1;dr<=1;dr++)for(let dc=-1;dc<=1;dc++){if(!dr&&!dc)continue;let rr=r+dr,cc=c+dc;if(inside(rr,cc)&&(!b[rr*8+cc]||pc(b[rr*8+cc])!==side))add(rr*8+cc);}}else{let ds=t==='b'?[[1,1],[1,-1],[-1,1],[-1,-1]]:t==='r'?[[1,0],[-1,0],[0,1],[0,-1]]:[[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]];for(const[dr,dc]of ds){let rr=r+dr,cc=c+dc;while(inside(rr,cc)){let to=rr*8+cc;if(!b[to])add(to);else{if(pc(b[to])!==side)add(to);break;}rr+=dr;cc+=dc;}}}}return m;}
+function makeMove(pos,m){const b=pos.b.slice();let p=b[m.from];b[m.from]=null;if(m.promotion)p=pos.side==='w'?m.promotion.toUpperCase():m.promotion;b[m.to]=p;return{b,side:other(pos.side)};}
+function legalMoves(pos){const us=pos.side,out=[];for(const m of pseudoMoves(pos)){const n=makeMove(pos,m),k=kingIndex(n.b,us);if(k>=0&&!attacked(n.b,k,other(us)))out.push(m);}return out;}
+function checkMate(pos){const ms=legalMoves(pos);return ms.length===0&&inCheck(pos,pos.side);}
+function posKey(pos,rem){return boardKey(pos.b)+'|'+pos.side+'|'+rem;}
+function givesCheck(pos,m){const n=makeMove(pos,m);return inCheck(n,n.side);}
+function forcedMate(pos,attacker,rem,deadline,checksOnly,memo){if(performance.now()>deadline)throw new Error('TIMEOUT');const moves=legalMoves(pos);if(!moves.length)return inCheck(pos,pos.side)&&pos.side!==attacker?[]:null;if(pos.side===attacker&&rem<=0)return null;let key=posKey(pos,rem)+'|'+(checksOnly?1:0);if(memo.has(key))return memo.get(key);if(pos.side===attacker){let ordered=moves.map(m=>({m,ch:givesCheck(pos,m)})).sort((a,b)=>Number(b.ch)-Number(a.ch));if(checksOnly)ordered=ordered.filter(x=>x.ch);for(const x of ordered){const n=makeMove(pos,x.m),sub=forcedMate(n,attacker,rem-1,deadline,checksOnly,memo);if(sub!==null){const ans=[x.m,...sub];memo.set(key,ans);return ans;}}memo.set(key,null);return null;}else{let worst=[];for(const m of moves){const n=makeMove(pos,m),sub=forcedMate(n,attacker,rem,deadline,checksOnly,memo);if(sub===null){memo.set(key,null);return null;}const cand=[m,...sub];if(cand.length>worst.length)worst=cand;}memo.set(key,worst);return worst;}}
+function findMate(board,side,maxDepth=5,ms=1800){if(!validShape(board))return null;let pos={b:board.slice(),side},deadline=performance.now()+ms;for(let d=1;d<=maxDepth;d++){try{let line=forcedMate(pos,side,d,deadline,true,new Map());if(line)return{line,mate:d,pos};}catch(e){if(e.message==='TIMEOUT')return null;throw e;}}return null;}
+function moveSAN(pos,m){let t=pt(m.piece),capture=!!m.capture,prefix='';if(t==='p'){if(capture)prefix='abcdefgh'[m.from%8]+'x';}else{prefix=t.toUpperCase();const same=legalMoves(pos).filter(x=>x.from!==m.from&&pt(x.piece)===t&&x.to===m.to);if(same.length){let ff=m.from%8,fr=(m.from/8)|0,fileUnique=same.every(x=>x.from%8!==ff),rankUnique=same.every(x=>((x.from/8)|0)!==fr);prefix+=fileUnique?'abcdefgh'[ff]:rankUnique?String(8-fr):sq(m.from);}if(capture)prefix+='x';}let s=prefix+sq(m.to);if(m.promotion)s+='='+m.promotion.toUpperCase();const n=makeMove(pos,m);if(inCheck(n,n.side))s+=legalMoves(n).length===0?'#':'+';return s;}
+function annotate(start,line){let pos={b:start.b.slice(),side:start.side},out=[];for(const m of line){out.push({...m,san:moveSAN(pos,m)});pos=makeMove(pos,m);}return out;}
+function notation(line,startSide){let no=1,side=startSide,parts=[];for(const m of line){if(side==='w'){parts.push(no+'. '+m.san);side='b';}else{parts.push(no+'... '+m.san);no++;side='w';}}return parts.join(' ');}
+function fenBoard(b){let rows=[];for(let r=0;r<8;r++){let s='',n=0;for(let c=0;c<8;c++){let p=b[r*8+c];if(!p)n++;else{if(n){s+=n;n=0;}s+=p;}}if(n)s+=n;rows.push(s);}return rows.join('/');}
+
+async function solveCells(cells){const base=cellsBoard(cells),pref=preferredOrientation(cells),order=pref==='black'?[{b:rotateBoard(base),o:'black'},{b:base,o:'white'}]:[{b:base,o:'white'},{b:rotateBoard(base),o:'black'}];let tries=0;for(const item of order)for(const side of[item.o==='black'?'b':'w',item.o==='black'?'w':'b']){tries++;prog(62,'Buscando el mate','Probando orientación y turno...');await wait(0);let hit=findMate(item.b,side,5,2200);if(hit)return{...hit,orientation:item.o,tries};}
+ const uncertain=[];for(let i=0;i<cells.length;i++){let c=cells[i];if(c.empty||c.alts.length<2)continue;let margin=c.alts[0].score-c.alts[1].score;if(margin<.14||c.alts[0].score<.76)uncertain.push({i,margin});}uncertain.sort((a,b)=>a.margin-b.margin);let variants=[];for(const u of uncertain.slice(0,9)){for(let alt=1;alt<Math.min(3,cells[u.i].alts.length);alt++){let use={};use[u.i]=alt;variants.push({use,pen:cells[u.i].alts[0].score-cells[u.i].alts[alt].score});}}for(let a=0;a<Math.min(6,uncertain.length);a++)for(let b=a+1;b<Math.min(6,uncertain.length);b++){let use={};use[uncertain[a].i]=1;use[uncertain[b].i]=1;variants.push({use,pen:uncertain[a].margin+uncertain[b].margin});}variants.sort((a,b)=>a.pen-b.pen);for(const v of variants.slice(0,70)){let bb=cellsBoard(cells,v.use);if(!validShape(bb))continue;for(const item of(pref==='black'?[{b:rotateBoard(bb),o:'black'},{b:bb,o:'white'}]:[{b:bb,o:'white'},{b:rotateBoard(bb),o:'black'}]))for(const side of[item.o==='black'?['b','w']:['w','b']]){tries++;if(tries%5===0){prog(70,'Corrigiendo lecturas dudosas','Comprobando alternativas...');await wait(0);}let hit=findMate(item.b,side,5,500);if(hit)return{...hit,orientation:item.o,tries};}}
+ return null;}
+function renderBoard(board,orientation,last){const files=orientation==='black'?'hgfedcba':'abcdefgh',ranks=orientation==='black'?'12345678':'87654321';$('board').innerHTML='';for(let vr=0;vr<8;vr++)for(let vc=0;vc<8;vc++){let br=orientation==='black'?7-vr:vr,bc=orientation==='black'?7-vc:vc,name='abcdefgh'[bc]+(8-br),el=document.createElement('div');el.className='sq '+(((vr+vc)&1)?'dark':'light');if(last&&last.from===br*8+bc)el.classList.add('lastFrom');if(last&&last.to===br*8+bc)el.classList.add('lastTo');let p=board[br*8+bc];if(p){let sp=document.createElement('span');sp.className='piece';sp.textContent=GLYPH[p];el.appendChild(sp);}if(vc===0){let s=document.createElement('span');s.className='coord rank';s.textContent=ranks[vr];el.appendChild(s);}if(vr===7){let s=document.createElement('span');s.className='coord file';s.textContent=files[vc];el.appendChild(s);}$('board').appendChild(el);}}
+function stopPlay(){S.playing=false;clearTimeout(S.timer);S.timer=null;$('play').textContent='▶ Play';}
+function gotoStep(n){S.step=Math.max(0,Math.min(S.positions.length-1,n));let last=S.step?S.line[S.step-1]:null;renderBoard(S.positions[S.step].b,S.orientation,last);}
+async function playLoop(){if(!S.playing)return;if(S.step>=S.positions.length-1){stopPlay();return;}gotoStep(S.step+1);S.timer=setTimeout(playLoop,Number($('speed').value));}
+function togglePlay(){if(S.playing){stopPlay();return;}if(S.step>=S.positions.length-1)gotoStep(0);S.playing=true;$('play').textContent='❚❚ Pausa';S.timer=setTimeout(playLoop,120);}
+async function analyze(url){stopPlay();S.dataUrl=url;show('processing');$('procImg').src=url;prog(7,'Leyendo el puzzle','Buscando el tablero...');try{const img=await loadImg(url);S.img=img;await wait(30);const rect=detectBoard(img);S.rect=rect;prog(30,'Tablero encontrado','Reconociendo las piezas localmente...');await wait(20);const cells=scanBoard(img,rect);S.cells=cells;let pieces=cells.filter(c=>!c.empty).length;if(pieces<4)throw new Error('He encontrado el tablero, pero no reconozco suficientes piezas.');prog(52,'Piezas reconstruidas','Buscando un mate forzado...');await wait(30);const solved=await solveCells(cells);if(!solved)throw new Error('He reconstruido '+pieces+' piezas, pero no encuentro un mate forzado de hasta 5 jugadas.');S.orientation=solved.orientation;S.start=solved.pos;S.line=annotate(solved.pos,solved.line);S.mateN=solved.mate;S.positions=[{b:solved.pos.b.slice(),side:solved.pos.side}];let pos={b:solved.pos.b.slice(),side:solved.pos.side};for(const m of S.line){pos=makeMove(pos,m);S.positions.push({b:pos.b.slice(),side:pos.side});}S.step=0;S.debug='Tablero: '+fenBoard(solved.pos.b)+' '+solved.pos.side+' | '+pieces+' piezas | '+solved.tries+' intentos';$('problemText').textContent=(solved.pos.side==='b'?'Negras':'Blancas')+' mueven · mate forzado';$('mate').textContent='Mate en '+S.mateN;$('line').textContent=notation(S.line,solved.pos.side);renderBoard(S.positions[0].b,S.orientation,null);prog(100,'Listo','');await wait(150);show('result');}catch(e){console.error(e);$('errorText').textContent=e.message||'No he podido resolver esta captura.';$('details').textContent='Todo se ha ejecutado localmente. '+(S.rect?'Tablero detectado en x '+S.rect.x+', y '+S.rect.y+', '+S.rect.s+' px. ':'')+(S.debug||'');show('error');}}
+$('picker').addEventListener('change',async e=>{const f=e.target.files&&e.target.files[0];if(!f)return;const u=await fileData(f);e.target.value='';analyze(u);});
+$('cancel').onclick=()=>show('home');$('back').onclick=()=>{stopPlay();show('home');};$('errorBack').onclick=()=>show('home');$('play').onclick=togglePlay;$('prev').onclick=()=>{stopPlay();gotoStep(S.step-1);};$('next').onclick=()=>{stopPlay();gotoStep(S.step+1);};
+$('copy').onclick=async()=>{let t=notation(S.line,S.start.side);try{await navigator.clipboard.writeText(t);$('copy').textContent='Copiado ✓';setTimeout(()=>$('copy').textContent='Copiar solución',1100);}catch(e){}};
+$('share').onclick=async()=>{let t='Mate en '+S.mateN+'\n'+notation(S.line,S.start.side);if(navigator.share){try{await navigator.share({title:'Chess puzzle solution',text:t});return;}catch(e){}}try{await navigator.clipboard.writeText(t);}catch(e){}$('share').textContent='Copiado ✓';setTimeout(()=>$('share').textContent='Compartir',1100);};
+
+
+;(() => {
+  const names = [
+    '
+</body>
+</html>
+,'SCREENS','GLYPH','TYPES','TEMPLATE64','TEMPLATES','S',
+    'show','prog','wait','fileData','loadImg','median','detectBoard',
+    'largestComponent','normalizeMask','iou','scanBoard','cellsBoard',
+    'rotateBoard','boardKey','validShape','preferredOrientation','pc','pt',
+    'other','rc','inside','sq','kingIndex','attacked','inCheck','pseudoMoves',
+    'makeMove','legalMoves','givesCheck','posKey','forcedMate','findMate',
+    'solveCells','fenBoard','annotate','notation','renderBoard','stopPlay',
+    'gotoStep','playLoop','togglePlay','analyze'
+  ];
+  for (const name of names) { try { window[name] = eval(name); } catch (_) {} }
+})();
+
+/* ===== solve6/solver-v3.js ===== */
+/* MateShot solver v3: robust board refinement, coordinate-safe recognition and deeper composed-mate search. */
+(() => {
+  const MAX_MATE=8;
+  const coreDetectBoard=window.detectBoard;
+  function med(values){if(!values.length)return 0;values=[...values].sort((a,b)=>a-b);const n=values.length;return n&1?values[n>>1]:(values[(n>>1)-1]+values[n>>1])/2;}
+  function dist3(a,b){const x=a[0]-b[0],y=a[1]-b[1],z=a[2]-b[2];return Math.sqrt(x*x+y*y+z*z);}
+  function boardColourScore(px,W,H,x0,y0,s){
+    if(x0<0||y0<0||x0+s>=W||y0+s>=H)return-1;
+    const offsets=[[.22,.22],[.78,.22],[.22,.78],[.78,.78],[.5,.15],[.15,.5],[.85,.5],[.5,.85]],A=[],B=[];
+    for(let r=0;r<8;r++)for(let c=0;c<8;c++){
+      const rr=[],gg=[],bb=[];
+      for(const [ox,oy] of offsets){const x=Math.max(0,Math.min(W-1,Math.round(x0+(c+ox)*s/8))),y=Math.max(0,Math.min(H-1,Math.round(y0+(r+oy)*s/8))),i=(y*W+x)*4;rr.push(px[i]);gg.push(px[i+1]);bb.push(px[i+2]);}
+      const col=[med(rr),med(gg),med(bb)];(((r+c)&1)?B:A).push(col);
+    }
+    const center=arr=>[med(arr.map(v=>v[0])),med(arr.map(v=>v[1])),med(arr.map(v=>v[2]))],ca=center(A),cb=center(B),sep=dist3(ca,cb),wa=med(A.map(v=>dist3(v,ca))),wb=med(B.map(v=>dist3(v,cb)));
+    return sep/(wa+wb+1);
+  }
+  window.detectBoard=detectBoard=function(img){
+    const raw=coreDetectBoard(img);
+    try{
+      const W0=img.naturalWidth||img.width,H0=img.naturalHeight||img.height,maxW=480,scale=Math.min(1,maxW/W0),W=Math.round(W0*scale),H=Math.round(H0*scale);
+      const cv=document.createElement('canvas');cv.width=W;cv.height=H;const ctx=cv.getContext('2d',{willReadFrequently:true});ctx.drawImage(img,0,0,W,H);const px=ctx.getImageData(0,0,W,H).data;
+      const rx=raw.x*scale,ry=raw.y*scale,rs=raw.s*scale;let best={score:boardColourScore(px,W,H,rx,ry,rs),x:rx,y:ry,s:rs};
+      const shifts=[-1.5,-1.25,-1,-.75,-.5,-.25,0,.25,.5,.75,1,1.25,1.5],scales=[.97,1,1.03];
+      for(const sf of scales){const s=rs*sf,cell=s/8;for(const dy of shifts)for(const dx of shifts){const x=rx+dx*cell,y=ry+dy*cell,score=boardColourScore(px,W,H,x,y,s);if(score>best.score)best={score,x,y,s};}}
+      if(best.score>10){const inv=1/scale;return{x:Math.max(0,Math.round(best.x*inv)),y:Math.max(0,Math.round(best.y*inv)),s:Math.round(best.s*inv)};}
+    }catch(e){console.warn('MateShot board refinement skipped',e);}
+    return raw;
+  };
+
+  window.scanBoard=scanBoard=function(img,rect){
+    const size=800,cv=document.createElement('canvas');cv.width=size;cv.height=size;const ctx=cv.getContext('2d',{willReadFrequently:true});ctx.drawImage(img,rect.x,rect.y,rect.s,rect.s,0,0,size,size);const px=ctx.getImageData(0,0,size,size).data,cell=size/8,cells=[];
+    for(let r=0;r<8;r++)for(let c=0;c<8;c++){
+      const x0=Math.round(c*cell),y0=Math.round(r*cell),x1=Math.round((c+1)*cell),y1=Math.round((r+1)*cell),w=x1-x0,h=y1-y0,inset=Math.max(3,Math.round(Math.min(w,h)*.07)),samples=[];
+      const corners=[[inset,inset],[w-inset-1,inset],[inset,h-inset-1],[w-inset-1,h-inset-1]];
+      for(const [cx,cy] of corners)for(let dy=-2;dy<=2;dy++)for(let dx=-2;dx<=2;dx++){const xx=Math.max(0,Math.min(w-1,cx+dx))+x0,yy=Math.max(0,Math.min(h-1,cy+dy))+y0,i=(yy*size+xx)*4;samples.push([px[i],px[i+1],px[i+2]]);}
+      const bg=[median(samples.map(s=>s[0])),median(samples.map(s=>s[1])),median(samples.map(s=>s[2]))],bgL=.299*bg[0]+.587*bg[1]+.114*bg[2],mask=new Uint8Array(w*h),guard=Math.max(4,Math.round(Math.min(w,h)*.05));
+      let xx0=guard,xx1=w-guard,yy0=guard,yy1=h-guard;if(c===7)xx1=Math.min(xx1,Math.round(w*.82));if(r===7)yy1=Math.min(yy1,Math.round(h*.82));
+      for(let yy=yy0;yy<yy1;yy++)for(let xx=xx0;xx<xx1;xx++){const i=((y0+yy)*size+x0+xx)*4,dr=px[i]-bg[0],dg=px[i+1]-bg[1],db=px[i+2]-bg[2];if(Math.sqrt(dr*dr+dg*dg+db*db)/441.67>.13)mask[yy*w+xx]=1;}
+      const comp=largestComponent(mask,w,h);if(comp.pts.length<w*h*.035){cells.push({empty:true,r,c});continue;}
+      const nm=normalizeMask(comp.mask,w,h),ranked=TYPES.map(t=>({t,score:iou(nm,TEMPLATES[t])})).sort((a,b)=>b.score-a.score);if(ranked[0].score<.25){cells.push({empty:true,r,c});continue;}
+      let light=0,dark=0;for(const z of comp.pts){const yy=(z/w)|0,xx=z-yy*w,i=((y0+yy)*size+x0+xx)*4,L=.299*px[i]+.587*px[i+1]+.114*px[i+2];if(L>bgL+25)light++;else if(L<bgL-25)dark++;}
+      cells.push({empty:false,r,c,color:light>dark*.4?'w':'b',alts:ranked.slice(0,3)});
+    }
+    return cells;
+  };
+
+  function kingRepairUse(cells){
+    const use={};
+    for(const color of['w','b']){
+      const ks=[];for(let i=0;i<cells.length;i++){const c=cells[i];if(c.empty||c.color!==color||c.alts?.[0]?.t!=='k')continue;const next=c.alts.find(a=>a.t!=='k');ks.push({i,confidence:c.alts[0].score-(next?.score||0)});}
+      if(ks.length>1){ks.sort((a,b)=>b.confidence-a.confidence);for(const extra of ks.slice(1)){const c=cells[extra.i],alt=c.alts.findIndex(a=>a.t!=='k');if(alt>0)use[extra.i]=alt;}}
+    }
+    return use;
+  }
+
+  function forcedMateQuiet(pos,attacker,rem,quietLeft,deadline,memo,stats){
+    if((++stats.nodes&2047)===0&&performance.now()>deadline)throw new Error('TIMEOUT');
+    const moves=legalMoves(pos);if(!moves.length)return inCheck(pos,pos.side)&&pos.side!==attacker?[]:null;if(pos.side===attacker&&rem<=0)return null;
+    const key=posKey(pos,rem)+'|q'+quietLeft;if(memo.has(key))return memo.get(key);
+    if(pos.side===attacker){
+      const ordered=moves.map(m=>({m,ch:givesCheck(pos,m),cap:!!m.capture})).sort((a,b)=>(Number(b.ch)-Number(a.ch))*100+(Number(b.cap)-Number(a.cap))*10);
+      for(const x of ordered){if(!x.ch&&quietLeft<=0)continue;const sub=forcedMateQuiet(makeMove(pos,x.m),attacker,rem-1,quietLeft-(x.ch?0:1),deadline,memo,stats);if(sub!==null){const ans=[x.m,...sub];memo.set(key,ans);return ans;}}
+      memo.set(key,null);return null;
+    }
+    const ordered=moves.map(m=>({m,s:(m.capture?80:0)+(givesCheck(pos,m)?40:0)})).sort((a,b)=>b.s-a.s);let worst=[];
+    for(const x of ordered){const sub=forcedMateQuiet(makeMove(pos,x.m),attacker,rem,quietLeft,deadline,memo,stats);if(sub===null){memo.set(key,null);return null;}const cand=[x.m,...sub];if(cand.length>worst.length)worst=cand;}
+    memo.set(key,worst);return worst;
+  }
+
+  window.findMate=findMate=function(board,side,maxDepth=MAX_MATE,ms=18000){
+    if(!validShape(board))return null;const pos={b:board.slice(),side},deadline=performance.now()+ms;
+    for(let d=1;d<=maxDepth;d++){try{const line=forcedMate(pos,side,d,deadline,true,new Map());if(line)return{line,mate:d,pos};}catch(e){if(e.message==='TIMEOUT')break;throw e;}}
+    for(let quiet=1;quiet<=3;quiet++)for(let d=1;d<=maxDepth;d++){if(performance.now()>deadline)return null;try{const line=forcedMateQuiet(pos,side,d,quiet,deadline,new Map(),{nodes:0});if(line)return{line,mate:d,pos};}catch(e){if(e.message==='TIMEOUT')return null;throw e;}}
+    return null;
+  };
+
+  window.solveCells=solveCells=async function(cells){
+    const pref=preferredOrientation(cells),baseUse=kingRepairUse(cells),base=cellsBoard(cells,baseUse),orderFor=b=>pref==='black'?[{b:rotateBoard(b),o:'black'},{b,o:'white'}]:[{b,o:'white'},{b:rotateBoard(b),o:'black'}];
+    let tries=0;const overall=performance.now()+26000;
+    async function attempt(bb,variant=false){for(const item of orderFor(bb)){const sides=item.o==='black'?['b','w']:['w','b'];for(const side of sides){if(performance.now()>overall)return null;tries++;prog(62,'Buscando el mate','Probando orientación, turno y mates largos...');await wait(0);const budget=Math.min(variant?9000:20000,Math.max(800,overall-performance.now())),hit=findMate(item.b,side,MAX_MATE,budget);if(hit)return{...hit,orientation:item.o,tries};}}return null;}
+    let hit=await attempt(base,false);if(hit)return hit;
+    const uncertain=[];
+    for(let i=0;i<cells.length;i++){const c=cells[i];if(c.empty||c.alts.length<2)continue;const current=baseUse[i]||0,baseScore=c.alts[current]?.score||0;for(let alt=0;alt<Math.min(3,c.alts.length);alt++){if(alt===current)continue;const pen=Math.max(0,baseScore-c.alts[alt].score);if(pen<.18||baseScore<.79)uncertain.push({i,alt,pen});}}
+    uncertain.sort((a,b)=>a.pen-b.pen);const variants=[];
+    for(const u of uncertain.slice(0,14)){variants.push({use:{...baseUse,[u.i]:u.alt},pen:u.pen});}
+    for(let a=0;a<Math.min(8,uncertain.length);a++)for(let b=a+1;b<Math.min(8,uncertain.length);b++){if(uncertain[a].i===uncertain[b].i)continue;variants.push({use:{...baseUse,[uncertain[a].i]:uncertain[a].alt,[uncertain[b].i]:uncertain[b].alt},pen:uncertain[a].pen+uncertain[b].pen});}
+    variants.sort((a,b)=>a.pen-b.pen);
+    for(const v of variants.slice(0,48)){if(performance.now()>overall)break;const bb=cellsBoard(cells,v.use);if(!validShape(bb))continue;if(tries%3===0){prog(72,'Afinando piezas','Comprobando alternativas y mate de hasta 8...');await wait(0);}hit=await attempt(bb,true);if(hit)return hit;}
+    return null;
+  };
+
+  const coreAnalyze=window.analyze;
+  if(coreAnalyze){window.analyze=analyze=async function(url){try{S.debug='';S.rect=null;S.cells=null;}catch(_){}const out=await coreAnalyze(url);const err=document.getElementById('errorText');if(document.getElementById('error')?.classList.contains('active')&&err)err.textContent=err.textContent.replace(/hasta\s+5\s+jugadas/i,'hasta 8 jugadas');return out;};}
+})();
+
+
+/* ===== solve6/recognition-v3.js ===== */
+/* MateShot recognition v3: fallback for printed/classic boards with embedded coordinates. */
+(() => {
+  const baseScan = window.scanBoard || scanBoard;
+
+  const BANK64 = {
+    r:[
+      'AAAAAAAAAAAD5+PgB+fj4Af//+AH///gB///4AP//+AD///AAc/7gAD//wAA//8AAP//AAD//wAA//8AAP//AAD//wAA//8AAP//AAD//wAA//8AAf//gAP//8AD///AA///wB////Af///4H///+B////gP///wAAAAAAAAAAA=',
+      'AAAAAAAAAAAHx8fAB8fHwAf//8AH///AB///wAP//oAD//+AA//9AAH//gAB//4AAf/+AAH//gAB//4AAf/+AAH//gAB//4AAf/+AAH//gABf/wAAUA9AAP//4AD//+AA///gB9//uAf///wH///8B////AP///gAAAAAAAAAAA=',
+      'AAAAAAAAAAAHx8PABsxmwAX//8AF///gB///wAf//8AH///AAf//gAH//wAB//8AAf//AAH//wAB//8AAf//AAH//wAB//8AAf//AAH//wAB//8AAX/9gAPj34AD///AB///wA7//+Af///wH///8BrwADAP///wAAAAAAAAAAA=',
+      'AAAAAAAAAAADx8PAB8fnwAf/5kAH/73AB///wAf//8AH/gXAAYADgAG//wAA//8AAP//AAD//wAA//8AAP//AAD//wAA//8AAP//AAD//wAA//8AAf/9gAP//4AD///AA///wAd//uAP///wC///0A////AP///wAAAAAAAAAAA='
+    ],
+    k:[
+      'AAAAAAAAAAAABwAAAA+AAAAPgAAABwAAAAcAAAAHgAAAD4AAAB/AAD/f/8Aw//hgLz/vsD////g/93/oP///6D/9/+g//f/YH/3/8D/9/+ATBk5AGf/xgA///wAOf/YADf/4AA///gAOf/YAAf/8AAP//AAA//AAAAAAAAAAAAA=',
+      'AAAAAAAAAAAAH4AAAA+AAAAGAAAABwAAAA+AAAAegAAOH88AP9/fwDD/+uAf///wP/v/+D////g////oP/v/+D////g////wP98/4Df//+Aff+/AD9+/AA3//wAPf+8AD/+fAA3/+wAPf+8AD//+AAP9/AAA//AAAAAAAAAAAAA='
+    ],
+    n:[
+      'AAAAAAAAAAAA4wAAAPeAAAD/4AAA//gAAP/6AAH//AADv//AA///QAf//+AH///gD///8A////Af//+4H///6D///9g//v/8P/n//D/x//Q/4//0H8f//AeP//wAD//8AB///AAf//wAP//8AD///AB///wAf//kAAAAAAAAAAA=',
+      'AAAAAAAAAAAAxwAAAe8AAAH/gAAA+fAAAcb8AAH/nAAD//cAA//7gAb//YAP//7AHf7/YB/+v+Ab/b/wN/u/8D/3v/A////wPfn/0CHzf9g253/4P47/+A+N//gAG//4ADf/+AA///gAf//4AG//+AB///gAf//4AAAAAAAAAAA='
+    ],
+    q:[
+      'AAAAAAAAAAAA8+/AEfPvwDzz79w88cecPHHHHDxxxxw8cc8cHnvvPA97/3wPf/94D3//+A////gP///4D///+Af///AH/n/wB8Ph8AP//+AB///AAQAEwAH//8ABf/9AA4/54AP//8ADP/4AAcfhwAD+f4AAD/gAAAAAAAAAAAA='
+    ],
+    p:[
+      'AAAAAAAAAAAAAcAAAA/gAAAP8AAAD/AAAA/wAAAP8AAAD/gAAB/8AAA//AAAP/wAAD/8AAA//AAAP/wAAD/8AAAf/AAAP/wAAH/+AAD//wAA//+AAf//gAH//8AD///AA///wAf//8AH///gB///4Af//+AD///AAAAAAAAAAAA=',
+      'AAAAAAAAAAAAB8AAAA/gAAAf4AAAH/AAAB/wAAAf8AAAH/AAAD/4AAB//AAAf/wAAH/8AAB//AAAf/wAAH/8AAA/+AAAP/gAAP/8AAD//gAB//8AA///gAP//4AH//+AB///wAf//8AH///AB///wAf//8AH///AAAAAAAAAAAA=',
+      'AAAAAAAAAAAAB+AAAA5gAAAP8AAAD/AAAB/wAAAP0AAAG9gAADfsAAA//AAAL/wAAC/8AAAv/AAAP/wAAD/8AAAf/AAAO/wAAG/2AAD//wAA//+AAf//gAP//8AD//9AAv//wAf//8AH///gB///4Af//8ABQApAAAAAAAAAAAA=',
+      'AAAAAAAAAAAAB4AAAAzgAAAf4AAAH+AAAB/wAAAf4AAAP7AAAD/YAABf+AAAf+gAAH/8AAB/7AAAX+gAAH/4AAA/2AAAf9wAAN/sAAH/9gABf/8AA///AAP//4AH//+AB//+wAX//8AF///AB///wAf//8AH///AAAAAAAAAAAA='
+    ],
+    b:[
+      'AAAAAAAAAAAAB4AAAAeAAAAPwAAAD8AAAAeAAAAf4AAAP/AAAD/wAAD/+AAA//gAAf/+AAH//gAB//4AAf/+AAH//gAA//gAAD/wAAD/+AAA//gAAP/4AAD/+AAA//gAAP/4AAP//wA////gP///8D////gQAAAgAAAAAAAAAAA='
+    ]
+  };
+
+  function unpack(s){
+    const raw=atob(s),out=new Uint8Array(1024);
+    for(let i=0;i<1024;i++)out[i]=(raw.charCodeAt(i>>3)>>(7-(i&7)))&1;
+    return out;
+  }
+  const BANK={};
+  for(const [t,list] of Object.entries(BANK64))BANK[t]=list.map(unpack);
+
+  function medianFast(a){
+    const b=a.slice().sort((x,y)=>x-y),n=b.length;
+    return n?(n&1?b[n>>1]:(b[(n>>1)-1]+b[n>>1])/2):0;
+  }
+
+  function printedScan(img,rect){
+    const size=800,cv=document.createElement('canvas');cv.width=size;cv.height=size;
+    const ctx=cv.getContext('2d',{willReadFrequently:true});
+    ctx.drawImage(img,rect.x,rect.y,rect.s,rect.s,0,0,size,size);
+    const px=ctx.getImageData(0,0,size,size).data,cell=size/8,cells=[];
+
+    for(let r=0;r<8;r++)for(let c=0;c<8;c++){
+      const x0=Math.round(c*cell),y0=Math.round(r*cell),x1=Math.round((c+1)*cell),y1=Math.round((r+1)*cell);
+      const w=x1-x0,h=y1-y0,rs=[],gs=[],bs=[];
+
+      for(let yy=2;yy<h;yy+=4)for(let xx=2;xx<w;xx+=4){
+        const i=((y0+yy)*size+x0+xx)*4;rs.push(px[i]);gs.push(px[i+1]);bs.push(px[i+2]);
+      }
+      const bg=[medianFast(rs),medianFast(gs),medianFast(bs)];
+      const mask=new Uint8Array(w*h),guard=Math.max(7,Math.round(Math.min(w,h)*.09));
+      for(let yy=guard;yy<h-guard;yy++)for(let xx=guard;xx<w-guard;xx++){
+        const i=((y0+yy)*size+x0+xx)*4,dr=px[i]-bg[0],dg=px[i+1]-bg[1],db=px[i+2]-bg[2];
+        const dist=Math.sqrt(dr*dr+dg*dg+db*db)/441.67;
+        if(dist>.115)mask[yy*w+xx]=1;
+      }
+
+      const comp=largestComponent(mask,w,h);
+      if(comp.pts.length<w*h*.018){cells.push({empty:true,r,c});continue;}
+      const nm=normalizeMask(comp.mask,w,h);
+      const ranked=Object.keys(BANK).map(t=>({
+        t,score:Math.max(...BANK[t].map(m=>iou(nm,m)))
+      })).sort((a,b)=>b.score-a.score);
+      if(ranked[0].score<.34){cells.push({empty:true,r,c});continue;}
+
+      let bright=0;
+      for(const z of comp.pts){
+        const yy=(z/w)|0,xx=z-yy*w,i=((y0+yy)*size+x0+xx)*4;
+        const L=.299*px[i]+.587*px[i+1]+.114*px[i+2];
+        if(L>230)bright++;
+      }
+      const color=bright/Math.max(1,comp.pts.length)>.07?'w':'b';
+      cells.push({empty:false,r,c,color,alts:ranked.slice(0,3)});
+    }
+    return cells;
+  }
+
+  function quality(cells){
+    const pieces=cells.filter(c=>!c.empty).length;
+    if(pieces<4)return -100+pieces;
+    try{
+      const b=cellsBoard(cells);
+      let q=pieces;
+      if(validShape(b)||validShape(rotateBoard(b)))q+=50;
+      return q;
+    }catch(_){return pieces;}
+  }
+
+  window.scanBoard = scanBoard = function(img,rect){
+    let a;
+    try{a=baseScan(img,rect);}catch(_){a=[];}
+    let b;
+    try{b=printedScan(img,rect);}catch(_){b=[];}
+    return quality(b)>quality(a)?b:a;
+  };
+
+  // iOS/Safari can occasionally return from the photo picker without the old bubble listener firing reliably
+  // inside the html-preview wrapper. Capture the change at the input itself and hand it directly to MateShot.
+  const picker=document.getElementById('picker');
+  if(picker){
+    picker.addEventListener('change',async e=>{
+      const f=e.target.files&&e.target.files[0];
+      if(!f)return;
+      e.stopImmediatePropagation();
+      try{
+        const u=await fileData(f);
+        e.target.value='';
+        await analyze(u);
+      }catch(err){
+        console.error(err);
+        try{
+          document.getElementById('errorText').textContent='No he podido abrir esta imagen. Prueba otra captura.';
+          show('error');
+        }catch(_){ }
+      }
+    },true);
+  }
+})();
+
+
+/* ===== mateshot/detector-grid.js ===== */
+/* MateShot board detector guard.
+   Repairs suspiciously-small detections by looking for a real 8x8 periodic grid.
+   It leaves already-plausible detections untouched. */
+(() => {
+  'use strict';
+  const baseDetect = window.detectBoard;
+  if (typeof baseDetect !== 'function') return;
+
+  function periodicGrid(img){
+    const W0=img.naturalWidth||img.width,H0=img.naturalHeight||img.height;
+    const maxW=520,scale=Math.min(1,maxW/W0),W=Math.max(80,Math.round(W0*scale)),H=Math.max(80,Math.round(H0*scale));
+    const cv=document.createElement('canvas');cv.width=W;cv.height=H;
+    const ctx=cv.getContext('2d',{willReadFrequently:true});ctx.drawImage(img,0,0,W,H);
+    const p=ctx.getImageData(0,0,W,H).data;
+    const ex=new Float32Array(Math.max(1,W-1)),ey=new Float32Array(Math.max(1,H-1));
+    for(let y=0;y<H;y++)for(let x=0;x<W-1;x++){
+      const i=(y*W+x)*4,j=i+4;ex[x]+=(Math.abs(p[j]-p[i])+Math.abs(p[j+1]-p[i+1])+Math.abs(p[j+2]-p[i+2]))/3;
+    }
+    for(let y=0;y<H-1;y++)for(let x=0;x<W;x++){
+      const i=(y*W+x)*4,j=((y+1)*W+x)*4;ey[y]+=(Math.abs(p[j]-p[i])+Math.abs(p[j+1]-p[i+1])+Math.abs(p[j+2]-p[i+2]))/3;
+    }
+    for(let i=0;i<ex.length;i++)ex[i]/=H;for(let i=0;i<ey.length;i++)ey[i]/=W;
+    function smooth(v){const out=new Float32Array(v.length);for(let i=0;i<v.length;i++){let s=0,n=0;for(let k=-1;k<=1;k++){const q=i+k;if(q>=0&&q<v.length){s+=v[q];n++;}}out[i]=s/n;}return out;}
+    const sx=smooth(ex),sy=smooth(ey);
+    function axis(v,L){
+      const out=[],minCell=Math.max(10,Math.floor(L*.055)),maxCell=Math.max(minCell+1,Math.floor(L*.13));
+      for(let cell=minCell;cell<=maxCell;cell++){
+        const side=cell*8;if(side>L)continue;
+        const step=2;
+        for(let st=0;st<=L-side;st+=step){
+          let score=0;
+          for(let k=0;k<=8;k++){const q=Math.min(v.length-1,Math.max(0,st+k*cell));score+=v[q];}
+          out.push({score,st,cell});
+        }
+      }
+      out.sort((a,b)=>b.score-a.score);return out.slice(0,28);
+    }
+    const xs=axis(sx,W),ys=axis(sy,H);let best=null;
+    for(const a of xs)for(const b of ys){
+      const mismatch=Math.abs(a.cell-b.cell);if(mismatch>Math.max(2,(a.cell+b.cell)*.035))continue;
+      const score=a.score+b.score-mismatch*4;
+      const side=((a.cell+b.cell)/2)*8;
+      if(!best||score>best.score)best={score,x:a.st,y:b.st,s:side};
+    }
+    if(!best)return null;
+    const inv=1/scale;
+    return{x:Math.max(0,Math.round(best.x*inv)),y:Math.max(0,Math.round(best.y*inv)),s:Math.round(best.s*inv),score:best.score};
+  }
+
+  window.detectBoard = detectBoard = function(img){
+    const raw=baseDetect(img),W=img.naturalWidth||img.width,H=img.naturalHeight||img.height,minDim=Math.min(W,H);
+    const ratio=raw.s/minDim;
+    // The legacy detector is excellent on normal screenshots. Only intervene when it has
+    // clearly locked onto a small 4x4-ish patch inside a larger diagram.
+    if(ratio>=.60)return raw;
+    try{
+      const g=periodicGrid(img);
+      if(g && g.s>raw.s*1.45 && g.s>=minDim*.60)return{x:g.x,y:g.y,s:g.s};
+    }catch(e){console.warn('MateShot periodic grid repair skipped:',e);}
+    return raw;
+  };
+})();
+
+
+/* ===== mateshot/recognition-ml.js ===== */
+/* MateShot advanced recognition fallback.
+   Keeps the fast local silhouette recognizer for familiar boards, then falls back to
+   a neural 64-square classifier when the visual style is unfamiliar.
+
+   Neural model: Elucidation/ChessboardFenTensorflowJs (MIT License, copyright 2018 Elucidation)
+   https://github.com/Elucidation/ChessboardFenTensorflowJs
+   Model commit pinned below. TensorFlow.js 0.12.5 is loaded only when fallback is needed.
+*/
 (() => {
   'use strict';
 
-  const picker = document.getElementById('picker');
-  const pickButton = document.querySelector('.pick');
-  const uploadLabel = document.querySelector('[data-i18n="upload"]');
-  const es = (navigator.language || 'en').toLowerCase().startsWith('es');
+  const TF_URL = 'https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@0.12.5/dist/tf.min.js';
+  const MODEL_COMMIT = 'c75063981c4f781f63ac90c0c026402e23ebbef6';
+  const MODEL_ROOT = `https://cdn.jsdelivr.net/gh/Elucidation/ChessboardFenTensorflowJs@${MODEL_COMMIT}/frozen_model`;
+  const LABELS = '1KQRBNPkqrbnp';
 
-  if (picker) picker.disabled = true;
-  if (pickButton) {
-    pickButton.style.opacity = '.62';
-    pickButton.style.pointerEvents = 'none';
+  let tfPromise = null;
+  let predictorPromise = null;
+  const baseDetectBoard = window.detectBoard || detectBoard;
+
+  function med(a){
+    if(!a.length) return 0;
+    a=[...a].sort((x,y)=>x-y);
+    const n=a.length;
+    return n&1 ? a[n>>1] : (a[(n>>1)-1]+a[n>>1])/2;
   }
-  if (uploadLabel) uploadLabel.textContent = es ? 'Preparando MateShot…' : 'Preparing MateShot…';
-
-  const CDN = 'https://cdn.jsdelivr.net/gh/ramonbuzon/video-masks';
-  const CORE_COMMIT = 'a28d28a36fd3610b13e6ad1f5d6f9da8a09a326b';
-  const MODULE_COMMIT = '0c9d38c907f086d11d310047f9c863b47380c534';
-  const ML_COMMIT = '567873bb50874c0ca03b4c64b04f5a107ae900b1';
-  const GRID_COMMIT = 'feec4165e04a608ea045a4af0aee247023885204';
-  const INTEGRITY_COMMIT = 'c1cf9fbed1a929a1ab1389506beba86cbc84d1af';
-  const REPAIR_COMMIT = '35ba4b2d665ed18b36272b5dcee9da17246ddb52';
-  const OCCUPANCY_COMMIT = '746bb6a4d0db0ed001ef50e7ca7f7a8533d5721a';
-  const FINAL_GUARD_COMMIT = '384402dd6d8ff036a6e8cc624a0cd9be93d53ae9';
-  const sources = [
-    `${CDN}@${CORE_COMMIT}/solve5/app.js`,
-    `${CDN}@${MODULE_COMMIT}/solve6/solver-v3.js`,
-    `${CDN}@${MODULE_COMMIT}/solve6/recognition-v3.js`,
-    `${CDN}@${GRID_COMMIT}/mateshot/detector-grid.js`,
-    `${CDN}@${ML_COMMIT}/mateshot/recognition-ml.js`,
-    `${CDN}@${INTEGRITY_COMMIT}/mateshot/integrity-guard.js`,
-    `${CDN}@${REPAIR_COMMIT}/mateshot/recognition-repair.js`,
-    `${CDN}@${OCCUPANCY_COMMIT}/mateshot/occupancy-recover.js`,
-    `${CDN}@${MODULE_COMMIT}/solve6/enhance.js`,
-    `${CDN}@${MODULE_COMMIT}/solve6/video-fix.js`,
-    `${CDN}@${MODULE_COMMIT}/solve6/finish-fx.js`,
-    `${CDN}@${MODULE_COMMIT}/solve6/replay-web.js`,
-    `${CDN}@${MODULE_COMMIT}/solve6/polish-v10.js`,
-    `${CDN}@${MODULE_COMMIT}/solve6/polish-v11.js`,
-    `${CDN}@${MODULE_COMMIT}/solve6/polish-v12.js`,
-    `${CDN}@${FINAL_GUARD_COMMIT}/mateshot/final-guard.js`
-  ];
-
-  const bridge = `\n;(() => {\n  const names = [\n    '
-<!-- MateShot build: final consistency guard -->
-</body>
-</html>
-,'SCREENS','GLYPH','TYPES','TEMPLATE64','TEMPLATES','S',\n    'show','prog','wait','fileData','loadImg','median','detectBoard',\n    'largestComponent','normalizeMask','iou','scanBoard','cellsBoard',\n    'rotateBoard','boardKey','validShape','preferredOrientation','pc','pt',\n    'other','rc','inside','sq','kingIndex','attacked','inCheck','pseudoMoves',\n    'makeMove','legalMoves','givesCheck','posKey','forcedMate','findMate',\n    'solveCells','fenBoard','annotate','notation','renderBoard','stopPlay',\n    'gotoStep','playLoop','togglePlay','analyze'\n  ];\n  for (const name of names) {\n    try { window[name] = eval(name); } catch (_) {}\n  }\n})();\n`;
-
-  async function getSource(url) {
-    const res = await fetch(url, {cache:'force-cache', mode:'cors'});
-    if (!res.ok) throw new Error(`Could not load MateShot module (${res.status})`);
-    return res.text();
+  function d3(a,b){
+    const x=a[0]-b[0],y=a[1]-b[1],z=a[2]-b[2];
+    return Math.sqrt(x*x+y*y+z*z);
   }
 
-  function applyFinalHomeCopy() {
-    const eyebrow = document.querySelector('[data-i18n="eyebrow"]');
-    const hero1 = document.querySelector('[data-i18n="hero1"]');
-    const hero2 = document.querySelector('[data-i18n="hero2"]');
-    const heroText = document.querySelector('[data-i18n="heroText"]');
-    const homeCore = document.querySelector('.homeCore');
-    const microcopy = document.querySelector('.microcopy');
-
-    if (homeCore) homeCore.style.width = 'min(100%, 600px)';
-    if (microcopy) microcopy.remove();
-
-    if (eyebrow) eyebrow.textContent = es ? 'De screenshot a solución' : 'From screenshot to solution';
-    if (hero1) hero1.textContent = es ? 'Sube un problema de ajedrez.' : 'Upload a chess problem.';
-    if (hero2) hero2.textContent = es ? 'Mira su solución.' : 'See its solution.';
-    if (heroText) {
-      heroText.textContent = es
-        ? 'MateShot analiza cualquier imagen que contenga un problema de mate de ajedrez de hasta 8 jugadas, y muestra su solución animada.'
-        : 'MateShot analyzes any image containing a chess mate problem of up to 8 moves and shows its animated solution.';
+  function checkerScore(px,W,H,x0,y0,s){
+    if(s<80 || x0<0 || y0<0 || x0+s>W || y0+s>H) return -1;
+    const A=[],B=[];
+    const taps=[[.25,.25],[.5,.25],[.75,.25],[.25,.5],[.5,.5],[.75,.5],[.25,.75],[.5,.75],[.75,.75]];
+    for(let r=0;r<8;r++) for(let c=0;c<8;c++){
+      const rr=[],gg=[],bb=[];
+      for(const [ox,oy] of taps){
+        const x=Math.max(0,Math.min(W-1,Math.round(x0+(c+ox)*s/8)));
+        const y=Math.max(0,Math.min(H-1,Math.round(y0+(r+oy)*s/8)));
+        const i=(y*W+x)*4;
+        rr.push(px[i]);gg.push(px[i+1]);bb.push(px[i+2]);
+      }
+      const col=[med(rr),med(gg),med(bb)];
+      (((r+c)&1)?B:A).push(col);
     }
-    if (uploadLabel) uploadLabel.textContent = es ? 'Subir Screenshot' : 'Upload Screenshot';
+    const center=arr=>[med(arr.map(v=>v[0])),med(arr.map(v=>v[1])),med(arr.map(v=>v[2]))];
+    const ca=center(A),cb=center(B);
+    const sep=d3(ca,cb);
+    const wa=med(A.map(v=>d3(v,ca))),wb=med(B.map(v=>d3(v,cb)));
+    return sep/(wa+wb+3);
   }
 
-  async function boot() {
-    try {
-      const code = [];
-      for (let i = 0; i < sources.length; i++) {
-        code.push(await getSource(sources[i]));
-        if (i === 0) code.push(bridge);
+  // Thick frames are common in scanned/printed puzzles. Search substantially inside the
+  // first detected square, instead of assuming the outer border is the 8x8 playing area.
+  function deepRefineBoard(img, raw){
+    try{
+      const W0=img.naturalWidth||img.width,H0=img.naturalHeight||img.height;
+      const maxW=520,scale=Math.min(1,maxW/W0),W=Math.round(W0*scale),H=Math.round(H0*scale);
+      const cv=document.createElement('canvas');cv.width=W;cv.height=H;
+      const ctx=cv.getContext('2d',{willReadFrequently:true});ctx.drawImage(img,0,0,W,H);
+      const px=ctx.getImageData(0,0,W,H).data;
+      const rx=raw.x*scale,ry=raw.y*scale,rs=raw.s*scale;
+      let best={score:checkerScore(px,W,H,rx,ry,rs),x:rx,y:ry,s:rs};
+      const scales=[.82,.84,.86,.88,.90,.92,.94,.96,.98,1,1.02];
+      const shifts=[-.65,-.45,-.25,-.1,0,.1,.25,.45,.65];
+      for(const sf of scales){
+        const s=rs*sf,cell=rs/8;
+        for(const dy of shifts) for(const dx of shifts){
+          const x=rx+(rs-s)/2+dx*cell;
+          const y=ry+(rs-s)/2+dy*cell;
+          const score=checkerScore(px,W,H,x,y,s);
+          if(score>best.score) best={score,x,y,s};
+        }
       }
-
-      const marker = document.createElement('script');
-      marker.type = 'application/json';
-      marker.dataset.mateshotSolverV3 = '1';
-      marker.textContent = '{}';
-      document.head.appendChild(marker);
-
-      const bundle = document.createElement('script');
-      bundle.id = 'mateshot-app';
-      bundle.textContent = code.join('\n\n') + '\n//# sourceURL=mateshot-app.js';
-      document.body.appendChild(bundle);
-
-      const ready = typeof window.analyze === 'function' && typeof window.fileData === 'function' && window.S;
-      if (!ready) throw new Error('MateShot core did not initialize correctly.');
-
-      applyFinalHomeCopy();
-
-      if (picker) picker.disabled = false;
-      if (pickButton) {
-        pickButton.style.opacity = '';
-        pickButton.style.pointerEvents = '';
+      const rawScore=checkerScore(px,W,H,rx,ry,rs);
+      if(best.score>Math.max(4.2,rawScore*1.14)){
+        const inv=1/scale;
+        return {x:Math.round(best.x*inv),y:Math.round(best.y*inv),s:Math.round(best.s*inv)};
       }
+    }catch(e){ console.warn('MateShot deep board refinement skipped:',e); }
+    return raw;
+  }
 
-      requestAnimationFrame(() => {
-        document.documentElement.dataset.mateshotReady = '1';
-      });
-    } catch (err) {
-      if (uploadLabel) uploadLabel.textContent = es ? 'Recargar MateShot' : 'Reload MateShot';
-      if (pickButton) {
-        pickButton.style.opacity = '1';
-        pickButton.style.pointerEvents = 'auto';
-        pickButton.setAttribute('for','');
-        pickButton.addEventListener('click', () => location.reload(), {once:true});
-      }
-      document.documentElement.dataset.mateshotReady = 'error';
-      console.warn('MateShot boot issue:', err && err.message ? err.message : err);
+  window.detectBoard = detectBoard = function(img){
+    return deepRefineBoard(img, baseDetectBoard(img));
+  };
+
+  function boardFromCells(cells){
+    try{return cellsBoard(cells);}catch(_){return Array(64).fill(null);}
+  }
+  function boardStats(b){
+    const count=x=>b.filter(p=>p===x).length;
+    const pieces=b.filter(Boolean).length;
+    const wk=count('K'),bk=count('k'),wp=count('P'),bp=count('p');
+    const backPawn=b.slice(0,8).concat(b.slice(56)).some(p=>p&&p.toLowerCase()==='p');
+    let adjacent=false;
+    const a=b.indexOf('K'),z=b.indexOf('k');
+    if(a>=0&&z>=0){const ar=(a/8)|0,ac=a%8,zr=(z/8)|0,zc=z%8;adjacent=Math.max(Math.abs(ar-zr),Math.abs(ac-zc))<=1;}
+    let bothCheck=false;
+    try{if(a>=0&&z>=0)bothCheck=attacked(b,a,'b')&&attacked(b,z,'w');}catch(_){}
+    return {pieces,wk,bk,wp,bp,backPawn,adjacent,bothCheck};
+  }
+  function legalishBoard(b){
+    const s=boardStats(b);
+    return s.pieces>=3&&s.pieces<=32&&s.wk===1&&s.bk===1&&s.wp<=8&&s.bp<=8&&!s.backPawn&&!s.adjacent&&!s.bothCheck;
+  }
+  function recognitionConfidence(cells){
+    const vals=cells.filter(c=>!c.empty&&c.alts?.length).map(c=>c.alts[0].score||0);
+    return vals.length?med(vals):0;
+  }
+
+  function loadLegacyTf(){
+    if(window.tf && typeof window.tf.loadFrozenModel==='function') return Promise.resolve(window.tf);
+    if(tfPromise) return tfPromise;
+    tfPromise=new Promise((resolve,reject)=>{
+      const s=document.createElement('script');
+      s.src=TF_URL;s.async=true;s.crossOrigin='anonymous';
+      s.onload=()=>window.tf&&typeof window.tf.loadFrozenModel==='function'?resolve(window.tf):reject(new Error('TensorFlow did not initialize.'));
+      s.onerror=()=>reject(new Error('Could not load the advanced recognition engine.'));
+      document.head.appendChild(s);
+    });
+    return tfPromise;
+  }
+
+  async function loadPredictor(){
+    if(predictorPromise) return predictorPromise;
+    predictorPromise=(async()=>{
+      const tf=await loadLegacyTf();
+      return tf.loadFrozenModel(`${MODEL_ROOT}/tensorflowjs_model.pb`,`${MODEL_ROOT}/weights_manifest.json`);
+    })();
+    return predictorPromise;
+  }
+
+  function drawMlBoard(img,rect,contrast=1){
+    const cv=document.createElement('canvas');cv.width=256;cv.height=256;
+    const ctx=cv.getContext('2d',{willReadFrequently:true});
+    ctx.drawImage(img,rect.x,rect.y,rect.s,rect.s,0,0,256,256);
+    const im=ctx.getImageData(0,0,256,256),p=im.data;
+    let mean=0;
+    for(let i=0;i<p.length;i+=4) mean+=(p[i]*.299+p[i+1]*.587+p[i+2]*.114);
+    mean/=65536;
+    for(let i=0;i<p.length;i+=4){
+      let y=p[i]*.299+p[i+1]*.587+p[i+2]*.114;
+      y=Math.max(0,Math.min(255,(y-mean)*contrast+mean));
+      p[i]=p[i+1]=p[i+2]=y;p[i+3]=255;
     }
+    ctx.putImageData(im,0,0);
+    return cv;
   }
 
-  boot();
+  function getTiles(tf,imgTensor){
+    const files=[];
+    for(let i=0;i<8;i++) files[i]=imgTensor.slice([0,32*i,0],[256,32,1]).reshape([8,1024]);
+    return tf.concat(files);
+  }
+
+  function predictionsToCells(pred){
+    const cells=[];
+    for(let r=0;r<8;r++) for(let c=0;c<8;c++){
+      const idx=Math.max(0,Math.min(12,Math.round(pred[r+c*8])));
+      const ch=LABELS[idx]||'1';
+      if(ch==='1') cells.push({empty:true,r,c});
+      else cells.push({empty:false,r,c,color:ch===ch.toUpperCase()?'w':'b',alts:[{t:ch.toLowerCase(),score:1}]});
+    }
+    return cells;
+  }
+
+  async function classifyMl(img,rect,contrast=1){
+    const tf=await loadLegacyTf(),predictor=await loadPredictor(),cv=drawMlBoard(img,rect,contrast);
+    const imgData=tf.fromPixels(cv).asType('float32');
+    const gray=imgData.slice([0,0,0],[256,256,1]);
+    const tiles=getTiles(tf,gray);
+    const keep=tf.scalar(1.0);
+    const out=predictor.execute({Input:tiles,KeepProb:keep});
+    const pred=Array.from(out.dataSync());
+    try{tf.dispose([imgData,gray,tiles,keep,out]);}catch(_){}
+    return predictionsToCells(pred);
+  }
+
+  function candidateScore(cells){
+    const b=boardFromCells(cells),s=boardStats(b);
+    let q=0;
+    q+=s.wk===1?45:-35*Math.abs(s.wk-1);
+    q+=s.bk===1?45:-35*Math.abs(s.bk-1);
+    q+=s.pieces>=3&&s.pieces<=32?18:-30;
+    q+=s.wp<=8?6:-15;q+=s.bp<=8?6:-15;
+    q+=s.backPawn?-10:4;q+=s.adjacent?-30:3;q+=s.bothCheck?-30:3;
+    return q;
+  }
+
+  async function mlCells(img,rect){
+    const attempts=[];
+    for(const contrast of[1,1.22,.84]){
+      try{attempts.push(await classifyMl(img,rect,contrast));}catch(e){console.warn('MateShot ML pass failed:',e);}
+    }
+    if(!attempts.length) throw new Error('Advanced recognition could not start.');
+    attempts.sort((a,b)=>candidateScore(b)-candidateScore(a));
+    return attempts[0];
+  }
+
+  function finalizeSolved(solved,cells,method){
+    const pieces=cells.filter(c=>!c.empty).length;
+    S.cells=cells;S.orientation=solved.orientation;S.start=solved.pos;
+    S.line=annotate(solved.pos,solved.line);S.mateN=solved.mate;
+    S.positions=[{b:solved.pos.b.slice(),side:solved.pos.side}];
+    let pos={b:solved.pos.b.slice(),side:solved.pos.side};
+    for(const m of S.line){pos=makeMove(pos,m);S.positions.push({b:pos.b.slice(),side:pos.side});}
+    S.step=0;
+    S.debug=`Reconocimiento: ${method} | Tablero: ${fenBoard(solved.pos.b)} ${solved.pos.side} | ${pieces} piezas | ${solved.tries||1} intentos`;
+    const side=solved.pos.side==='b'?'Negras':'Blancas';
+    document.getElementById('problemText').textContent=`${side} mueven · mate forzado`;
+    document.getElementById('mate').textContent='Mate en '+S.mateN;
+    document.getElementById('line').textContent=notation(S.line,solved.pos.side);
+    renderBoard(S.positions[0].b,S.orientation,null);
+  }
+
+  // Replace the old one-pass analyzer. Familiar boards still take the fast path. If the
+  // template confidence or chess legality is weak, MateShot uses the neural fallback.
+  window.analyze = analyze = async function(url){
+    stopPlay();S.dataUrl=url;S.debug='';S.rect=null;S.cells=null;
+    show('processing');
+    const procImg=document.getElementById('procImg');if(procImg)procImg.src=url;
+    prog(7,'Leyendo el puzzle','Buscando el tablero...');
+    try{
+      const img=await loadImg(url);S.img=img;await wait(20);
+      const rect=detectBoard(img);S.rect=rect;
+      prog(28,'Tablero encontrado','Reconociendo las piezas...');await wait(16);
+
+      const fastCells=scanBoard(img,rect);
+      const fastBoard=boardFromCells(fastCells);
+      const fastPieces=fastCells.filter(c=>!c.empty).length;
+      const fastConf=recognitionConfidence(fastCells);
+      let solved=null,usedCells=null,method='rápido';
+
+      // Only spend the expensive chess search on the fast result when the visual reading
+      // itself looks credible. This avoids 20+ seconds of searching a hallucinated board.
+      if(fastPieces<=32 && legalishBoard(fastBoard) && fastConf>=.46){
+        prog(50,'Piezas reconstruidas','Buscando la solución...');await wait(16);
+        solved=await solveCells(fastCells);
+        if(solved) usedCells=fastCells;
+      }
+
+      if(!solved){
+        prog(43,'Afinando la lectura','Probando reconocimiento visual avanzado...');await wait(16);
+        const advanced=await mlCells(img,rect);
+        const advancedBoard=boardFromCells(advanced);
+        if(!legalishBoard(advancedBoard)){
+          const st=boardStats(advancedBoard);
+          throw new Error(`No he podido reconstruir una posición legal con suficiente confianza (${st.pieces} piezas detectadas).`);
+        }
+        prog(63,'Posición reconstruida','Comprobando la solución de ajedrez...');await wait(16);
+        solved=await solveCells(advanced);
+        if(solved){usedCells=advanced;method='ML';}
+      }
+
+      if(!solved||!usedCells) throw new Error('He encontrado el tablero, pero no he podido confirmar una solución de mate de hasta 8 jugadas.');
+
+      finalizeSolved(solved,usedCells,method);
+      prog(100,'Listo','');await wait(120);show('result');
+    }catch(e){
+      console.error(e);
+      const err=document.getElementById('errorText');
+      if(err)err.textContent=e?.message||'No he podido resolver esta imagen.';
+      const details=document.getElementById('details');
+      if(details)details.textContent='El análisis se ha realizado en el navegador. '+(S.rect?`Tablero detectado en x ${S.rect.x}, y ${S.rect.y}, ${S.rect.s} px. `:'')+(S.debug||'');
+      show('error');
+    }
+  };
 })();
 
+
+/* ===== mateshot/integrity-guard.js ===== */
+/* MateShot result integrity guard.
+   A visually plausible occupied square must not silently disappear just because a neural
+   classifier called it empty. If that happens, reject the candidate before the recovery
+   layer accepts a false chess solution. */
+(() => {
+  'use strict';
+  const coreAnalyze=window.analyze;
+  if(typeof coreAnalyze!=='function')return;
+
+  function rawBoardFromSolved(){
+    if(!S?.start?.b)return null;
+    return S.orientation==='black'?rotateBoard(S.start.b):S.start.b.slice();
+  }
+  function reliableFastCells(){
+    if(!S?.img||!S?.rect)return null;
+    try{return scanBoard(S.img,S.rect);}catch(_){return null;}
+  }
+  function mismatch(fast){
+    const raw=rawBoardFromSolved();if(!raw||!fast)return null;
+    const missing=[];
+    for(let i=0;i<64;i++){
+      const c=fast[i];
+      if(!c||c.empty)continue;
+      const score=c.alts?.[0]?.score||0;
+      // Ignore weak text/watermark-like detections. Real pieces in the legacy recognizer
+      // normally clear this by a comfortable margin.
+      if(score<.31)continue;
+      if(!raw[i])missing.push(i);
+    }
+    return missing;
+  }
+
+  window.analyze=analyze=async function(url){
+    await coreAnalyze(url);
+    if(!document.getElementById('result')?.classList.contains('active'))return;
+    const fast=reliableFastCells();
+    if(!fast)return;
+    const count=fast.filter(c=>!c.empty&&(c.alts?.[0]?.score||0)>=.31).length;
+    const miss=mismatch(fast)||[];
+    if(count>=3&&count<=32&&miss.length>0&&miss.length<=3){
+      S.integrityFastCells=fast;
+      S.integrityMissing=miss;
+      stopPlay();
+      const err=document.getElementById('errorText');
+      if(err)err.textContent='Afinando la reconstrucción del tablero…';
+      show('error');
+    }else{
+      S.integrityFastCells=fast;
+      S.integrityMissing=[];
+    }
+  };
+})();
+
+
+/* ===== mateshot/recognition-repair.js ===== */
+/* MateShot recognition repair layer.
+   Runs only when the normal fast + ML recognizers fail.
+   Uses the MIT Elucidation classifier for occupancy/color, generic Cburnett silhouettes
+   for piece-type alternatives, chess legality and the mate solver to repair uncertain reads. */
+(() => {
+  'use strict';
+
+  const TF_URL='https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@0.12.5/dist/tf.min.js';
+  const MODEL_COMMIT='c75063981c4f781f63ac90c0c026402e23ebbef6';
+  const MODEL_ROOT=`https://cdn.jsdelivr.net/gh/Elucidation/ChessboardFenTensorflowJs@${MODEL_COMMIT}/frozen_model`;
+  const LABELS='1KQRBNPkqrbnp';
+  const PIECE_BASE='https://lichess1.org/assets/piece/cburnett/';
+  const TYPES2=['k','q','r','b','n','p'];
+  let tfP=null,predictorP=null,templatesP=null;
+  const coreAnalyze=window.analyze;
+  const coreSolve=window.solveCells;
+
+  const med=a=>{if(!a.length)return 0;a=[...a].sort((x,y)=>x-y);const n=a.length;return n&1?a[n>>1]:(a[n/2-1]+a[n/2])/2;};
+  const lum=(r,g,b)=>.299*r+.587*g+.114*b;
+
+  function loadTf(){
+    if(window.tf&&typeof window.tf.loadFrozenModel==='function')return Promise.resolve(window.tf);
+    if(tfP)return tfP;
+    tfP=new Promise((resolve,reject)=>{const s=document.createElement('script');s.src=TF_URL;s.async=true;s.crossOrigin='anonymous';s.onload=()=>window.tf?resolve(window.tf):reject(new Error('TensorFlow unavailable'));s.onerror=reject;document.head.appendChild(s);});
+    return tfP;
+  }
+  async function predictor(){
+    if(predictorP)return predictorP;
+    predictorP=(async()=>{const tf=await loadTf();return tf.loadFrozenModel(`${MODEL_ROOT}/tensorflowjs_model.pb`,`${MODEL_ROOT}/weights_manifest.json`);})();
+    return predictorP;
+  }
+  function tiles(tf,t){const files=[];for(let i=0;i<8;i++)files.push(t.slice([0,32*i,0],[256,32,1]).reshape([8,1024]));return tf.concat(files);}
+  function drawBoard(img,rect,contrast=1){
+    const c=document.createElement('canvas');c.width=c.height=256;const x=c.getContext('2d',{willReadFrequently:true});x.drawImage(img,rect.x,rect.y,rect.s,rect.s,0,0,256,256);const im=x.getImageData(0,0,256,256),p=im.data;let mean=0;for(let i=0;i<p.length;i+=4)mean+=lum(p[i],p[i+1],p[i+2]);mean/=65536;for(let i=0;i<p.length;i+=4){let y=lum(p[i],p[i+1],p[i+2]);y=Math.max(0,Math.min(255,(y-mean)*contrast+mean));p[i]=p[i+1]=p[i+2]=y;p[i+3]=255;}x.putImageData(im,0,0);return c;
+  }
+  function predCells(pred){const out=[];for(let r=0;r<8;r++)for(let c=0;c<8;c++){const n=Math.max(0,Math.min(12,Math.round(pred[r+c*8]))),ch=LABELS[n]||'1';if(ch==='1')out.push({empty:true,r,c});else out.push({empty:false,r,c,color:ch===ch.toUpperCase()?'w':'b',alts:[{t:ch.toLowerCase(),score:.72}],mlType:ch.toLowerCase()});}return out;}
+  async function classify(img,rect,contrast=1){
+    const tf=await loadTf(),m=await predictor(),cv=drawBoard(img,rect,contrast),raw=tf.fromPixels(cv).asType('float32'),gray=raw.slice([0,0,0],[256,256,1]),tt=tiles(tf,gray),keep=tf.scalar(1),o=m.execute({Input:tt,KeepProb:keep}),p=Array.from(o.dataSync());try{tf.dispose([raw,gray,tt,keep,o]);}catch(_){}return predCells(p);
+  }
+
+  async function genericTemplates(){
+    if(templatesP)return templatesP;
+    templatesP=Promise.all(TYPES2.map(t=>new Promise((resolve,reject)=>{
+      const im=new Image();im.crossOrigin='anonymous';im.onload=()=>{
+        try{const c=document.createElement('canvas');c.width=c.height=96;const x=c.getContext('2d',{willReadFrequently:true});x.clearRect(0,0,96,96);x.drawImage(im,4,4,88,88);const p=x.getImageData(0,0,96,96).data,m=new Uint8Array(96*96);for(let i=0;i<m.length;i++)if(p[i*4+3]>28)m[i]=1;const comp=largestComponent(m,96,96);resolve([t,normalizeMask(comp.mask,96,96)]);}catch(e){reject(e);}
+      };im.onerror=reject;im.src=PIECE_BASE+'b'+t.toUpperCase()+'.svg';
+    }))).then(a=>Object.fromEntries(a)).catch(()=>TEMPLATES);
+    return templatesP;
+  }
+
+  function boardCanvas(img,rect){const size=800,c=document.createElement('canvas');c.width=c.height=size;const x=c.getContext('2d',{willReadFrequently:true});x.drawImage(img,rect.x,rect.y,rect.s,rect.s,0,0,size,size);return{x,p:x.getImageData(0,0,size,size).data,size,cell:size/8};}
+  function squareFeatures(cache,r,c){
+    const {p,size,cell}=cache,x0=Math.round(c*cell),y0=Math.round(r*cell),w=Math.round(cell),h=Math.round(cell),g=Math.max(5,Math.round(cell*.07));
+    const samples=[];for(const [xx,yy] of[[g,g],[w-g-1,g],[g,h-g-1],[w-g-1,h-g-1]])for(let dy=-2;dy<=2;dy++)for(let dx=-2;dx<=2;dx++){const X=x0+Math.max(0,Math.min(w-1,xx+dx)),Y=y0+Math.max(0,Math.min(h-1,yy+dy)),i=(Y*size+X)*4;samples.push([p[i],p[i+1],p[i+2]]);}
+    const bg=[med(samples.map(v=>v[0])),med(samples.map(v=>v[1])),med(samples.map(v=>v[2]))],bgL=lum(...bg),mask=new Uint8Array(w*h);let diffSum=0;
+    for(let y=g;y<h-g;y++)for(let x=g;x<w-g;x++){const i=((y0+y)*size+x0+x)*4,dr=p[i]-bg[0],dg=p[i+1]-bg[1],db=p[i+2]-bg[2],d=Math.sqrt(dr*dr+dg*dg+db*db)/441.67;diffSum+=d;if(d>.105)mask[y*w+x]=1;}
+    const comp=largestComponent(mask,w,h),nm=normalizeMask(comp.mask,w,h);let fgL=0;for(const z of comp.pts){const y=(z/w)|0,x=z-y*w,i=((y0+y)*size+x0+x)*4;fgL+=lum(p[i],p[i+1],p[i+2]);}fgL/=Math.max(1,comp.pts.length);
+    const area=comp.pts.length/(w*h),colorDelta=fgL-bgL,likeness=area*Math.min(1.5,diffSum/(w*h*.08));
+    return{nm,area,colorDelta,likeness};
+  }
+
+  async function augment(cells,img,rect){
+    const gt=await genericTemplates(),bc=boardCanvas(img,rect),features=[];
+    for(let i=0;i<64;i++)features[i]=squareFeatures(bc,(i/8)|0,i%8);
+    const out=cells.map((c,i)=>{
+      if(c.empty)return{...c,_feat:features[i]};
+      const f=features[i],scores=TYPES2.map(t=>({t,score:Math.max(iou(f.nm,gt[t]||TEMPLATES[t]),iou(f.nm,TEMPLATES[t]))})).sort((a,b)=>b.score-a.score);
+      const map=new Map();map.set(c.alts?.[0]?.t||c.mlType,{t:c.alts?.[0]?.t||c.mlType,score:.72});
+      for(const s of scores.slice(0,4)){const sc=.53+.28*s.score;if(!map.has(s.t)||map.get(s.t).score<sc)map.set(s.t,{t:s.t,score:sc});}
+      let color=c.color;if(f.colorDelta>26)color='w';else if(f.colorDelta<-26)color='b';
+      return{...c,color,alts:[...map.values()].sort((a,b)=>b.score-a.score),_feat:f};
+    });
+    return out;
+  }
+
+  function setSolved(solved,cells,method){
+    S.cells=cells;S.orientation=solved.orientation;S.start=solved.pos;S.line=annotate(solved.pos,solved.line);S.mateN=solved.mate;S.positions=[{b:solved.pos.b.slice(),side:solved.pos.side}];let pos={b:solved.pos.b.slice(),side:solved.pos.side};for(const m of S.line){pos=makeMove(pos,m);S.positions.push({b:pos.b.slice(),side:pos.side});}S.step=0;S.debug=`Reconocimiento: ${method} | ${cells.filter(c=>!c.empty).length} piezas`;
+    document.getElementById('problemText').textContent=(solved.pos.side==='b'?'Negras':'Blancas')+' mueven · mate';document.getElementById('mate').textContent='Mate en '+S.mateN;document.getElementById('line').textContent=notation(S.line,solved.pos.side);renderBoard(S.positions[0].b,S.orientation,null);prog(100,'Listo','');show('result');
+  }
+
+  async function quickSolve(cells,maxDepth=4){
+    const base=cellsBoard(cells),pref=preferredOrientation(cells),order=pref==='black'?[{b:rotateBoard(base),o:'black'},{b:base,o:'white'}]:[{b:base,o:'white'},{b:rotateBoard(base),o:'black'}];let tries=0;
+    for(const item of order)for(const side of(item.o==='black'?['b','w']:['w','b'])){tries++;const hit=findMate(item.b,side,maxDepth,1100);if(hit)return{...hit,orientation:item.o,tries};}
+    return null;
+  }
+
+  async function recover(){
+    if(!S.img||!S.rect)return false;
+    prog(48,'Afinando la lectura','Combinando visión y reglas de ajedrez...');await wait(16);
+    const passes=[];for(const k of[1,1.2,.86]){try{passes.push(await classify(S.img,S.rect,k));}catch(_){}}
+    for(const base of passes){
+      const cells=await augment(base,S.img,S.rect);
+      let hit=await coreSolve(cells);if(hit){setSolved(hit,cells,'híbrido');return true;}
+      // A classifier can occasionally mark one real piece as empty. Try only the most
+      // piece-like empty squares, and only with the strongest generic type candidates.
+      const empties=cells.map((c,i)=>({c,i,f:c._feat})).filter(x=>x.c.empty&&x.f&&x.f.area>.035).sort((a,b)=>b.f.likeness-a.f.likeness).slice(0,4);
+      const gt=await genericTemplates();
+      for(const e of empties){
+        const ranked=TYPES2.map(t=>({t,score:Math.max(iou(e.f.nm,gt[t]||TEMPLATES[t]),iou(e.f.nm,TEMPLATES[t]))})).sort((a,b)=>b.score-a.score).slice(0,2);
+        const colors=Math.abs(e.f.colorDelta)>18?[e.f.colorDelta>0?'w':'b']:['w','b'];
+        for(const col of colors)for(const rr of ranked){
+          const v=cells.map((c,i)=>i===e.i?{empty:false,r:c.r,c:c.c,color:col,alts:[{t:rr.t,score:.74}],_feat:e.f}:c);
+          hit=await quickSolve(v,4);if(hit){setSolved(hit,v,'híbrido + reparación');return true;}
+        }
+      }
+    }
+    return false;
+  }
+
+  window.analyze=analyze=async function(url){
+    await coreAnalyze(url);
+    if(document.getElementById('result')?.classList.contains('active'))return;
+    try{if(await recover())return;}catch(e){console.warn('MateShot recovery skipped:',e);}
+  };
+})();
+
+
+/* ===== mateshot/occupancy-recover.js ===== */
+/* MateShot occupancy-aware recovery.
+   Runs after the hybrid recognizer. It preserves the neural piece reading where useful,
+   but restores strong occupied squares detected by the image itself before solving again. */
+(() => {
+  'use strict';
+  const coreAnalyze=window.analyze;
+  if(typeof coreAnalyze!=='function')return;
+
+  function mergeCells(primary,fast){
+    const out=[];
+    for(let i=0;i<64;i++){
+      const a=primary?.[i],b=fast?.[i];
+      if((!a||a.empty)&&b&&!b.empty){out.push({...b});continue;}
+      if(a&&!a.empty&&b&&!b.empty){
+        const map=new Map();
+        for(const x of(a.alts||[]))map.set(x.t,{...x});
+        for(const x of(b.alts||[]))if(!map.has(x.t)||(map.get(x.t).score||0)<(x.score||0))map.set(x.t,{...x});
+        out.push({...a,alts:[...map.values()].sort((x,y)=>(y.score||0)-(x.score||0))});continue;
+      }
+      out.push(a?{...a}:b?{...b}:{empty:true,r:(i/8)|0,c:i%8});
+    }
+    return out;
+  }
+
+  function applySolved(solved,cells,method){
+    S.cells=cells;S.orientation=solved.orientation;S.start=solved.pos;
+    S.line=annotate(solved.pos,solved.line);S.mateN=solved.mate;
+    S.positions=[{b:solved.pos.b.slice(),side:solved.pos.side}];
+    let pos={b:solved.pos.b.slice(),side:solved.pos.side};
+    for(const m of S.line){pos=makeMove(pos,m);S.positions.push({b:pos.b.slice(),side:pos.side});}
+    S.step=0;S.debug=`Reconocimiento: ${method} | ${cells.filter(c=>!c.empty).length} piezas`;
+    document.getElementById('problemText').textContent=(solved.pos.side==='b'?'Negras':'Blancas')+' mueven · mate';
+    document.getElementById('mate').textContent='Mate en '+S.mateN;
+    document.getElementById('line').textContent=notation(S.line,solved.pos.side);
+    renderBoard(S.positions[0].b,S.orientation,null);prog(100,'Listo','');show('result');
+  }
+
+  window.analyze=analyze=async function(url){
+    await coreAnalyze(url);
+    const isError=document.getElementById('error')?.classList.contains('active');
+    if(!isError)return;
+    let fast=S.integrityFastCells;
+    if(!fast&&S.img&&S.rect){try{fast=scanBoard(S.img,S.rect);}catch(_){}}
+    if(!fast)return;
+
+    const reliable=fast.filter(c=>!c.empty&&(c.alts?.[0]?.score||0)>=.25).length;
+    if(reliable<3||reliable>32)return;
+    prog(58,'Afinando la posición','Comprobando las casillas ocupadas...');await wait(12);
+
+    const candidates=[];
+    if(S.cells?.length===64)candidates.push({cells:mergeCells(S.cells,fast),name:'visión + ocupación'});
+    candidates.push({cells:fast,name:'ocupación directa'});
+
+    const seen=new Set();
+    for(const cand of candidates){
+      const key=cand.cells.map(c=>c.empty?'1':(c.color+(c.alts?.[0]?.t||'?'))).join('');
+      if(seen.has(key))continue;seen.add(key);
+      try{
+        const hit=await solveCells(cand.cells);
+        if(hit){applySolved(hit,cand.cells,cand.name);return;}
+      }catch(e){console.warn('MateShot occupancy recovery pass skipped:',e);}
+    }
+  };
+})();
+
+
+/* ===== solve6/enhance.js ===== */
+/* MateShot UI, Cburnett pieces, localization and video export layer. */
+(() => {
+  const UI_LANG = (navigator.language || 'en').toLowerCase().startsWith('es') ? 'es' : 'en';
+  const I18N = {
+    en:{eyebrow:'Screenshot to solution',hero1:'Drop a chess puzzle.',hero2:'Watch it solve itself.',heroText:'Upload a full screenshot with the puzzle prompt included. MateShot finds the board, solves the position and builds a replay you can share or download.',upload:'Upload screenshot',micro:'No board setup. No notation. Just the screenshot.',solution:'Solution',play:'Play solution',pause:'Pause',share:'Share',download:'Download video',rendering:'Building video…',sideB:'Black to move',sideW:'White to move',forced:'Forced mate in',mate:'Mate in',ready:'Video ready',downloaded:'Video downloaded',shareFallback:'Solution copied',errorTitle:'Couldn’t read this puzzle clearly',retry:'Try another screenshot',videoUnsupported:'Video export is not supported by this browser yet.'},
+    es:{eyebrow:'De captura a solución',hero1:'Sube un puzzle de ajedrez.',hero2:'Mira cómo se resuelve.',heroText:'Sube una captura completa con el enunciado incluido. MateShot encuentra el tablero, resuelve la posición y crea una repetición lista para compartir o descargar.',upload:'Subir captura',micro:'Sin montar el tablero. Sin notación. Solo la captura.',solution:'Solución',play:'Ver solución',pause:'Pausa',share:'Compartir',download:'Descargar vídeo',rendering:'Creando vídeo…',sideB:'Mueven negras',sideW:'Mueven blancas',forced:'Mate forzado en',mate:'Mate en',ready:'Vídeo listo',downloaded:'Vídeo descargado',shareFallback:'Solución copiada',errorTitle:'No he podido leer bien este puzzle',retry:'Probar otra captura',videoUnsupported:'Este navegador todavía no permite exportar el vídeo.'}
+  };
+  const t = k => I18N[UI_LANG][k] || I18N.en[k] || k;
+  document.documentElement.lang = UI_LANG;
+  document.querySelectorAll('[data-i18n]').forEach(el=>{ const k=el.getAttribute('data-i18n'); if(t(k)) el.textContent=t(k); });
+
+  const PIECE_BASE = 'https://lichess1.org/assets/piece/cburnett/';
+  const pieceCode = p => (p === p.toUpperCase() ? 'w' : 'b') + p.toUpperCase();
+  const pieceSrc = p => PIECE_BASE + pieceCode(p) + '.svg';
+
+  const boardStyle=document.createElement('style');
+  boardStyle.textContent=`
+    .boardWrap{position:relative;border-radius:14px!important;}
+    #board{position:relative;z-index:1;isolation:isolate;}
+    .coordLayer{position:absolute;inset:0;z-index:12;pointer-events:none;border-radius:inherit;overflow:hidden;}
+    .coordOverlay{position:absolute;box-sizing:border-box;font-size:8.5px;font-weight:760;line-height:1;opacity:.70;-webkit-font-smoothing:antialiased;text-shadow:none;}
+    .coordOverlay.onLight{color:rgba(125,91,67,.68);}
+    .coordOverlay.onDark{color:rgba(240,217,181,.78);}
+    .coordOverlay.rank{left:0;width:12.5%;height:12.5%;padding:5px 0 0 8px;text-align:left;}
+    .coordOverlay.file{bottom:0;width:12.5%;height:12.5%;padding:0 8px 5px 0;display:flex;align-items:flex-end;justify-content:flex-end;}
+  `;
+  document.head.appendChild(boardStyle);
+
+  function toast(msg){
+    const el=document.getElementById('toast'); if(!el)return; el.textContent=msg; el.classList.add('show'); clearTimeout(toast._t); toast._t=setTimeout(()=>el.classList.remove('show'),1800);
+  }
+
+  const originalProg = window.prog || prog;
+  const statusMap = new Map([
+    ['Leyendo el puzzle',['Reading puzzle','Leyendo el puzzle']],['Buscando el tablero...',['Looking for the board...','Buscando el tablero...']],
+    ['Tablero encontrado',['Board found','Tablero encontrado']],['Reconociendo las piezas localmente...',['Recognizing pieces locally...','Reconociendo las piezas localmente...']],
+    ['Piezas reconstruidas',['Position rebuilt','Posición reconstruida']],['Buscando un mate forzado...',['Searching for a forced mate...','Buscando un mate forzado...']],
+    ['Buscando el mate',['Solving puzzle','Resolviendo el puzzle']],['Probando orientación y turno...',['Checking orientation and side to move...','Comprobando orientación y turno...']],
+    ['Corrigiendo lecturas dudosas',['Refining the position','Afinando la posición']],['Comprobando alternativas...',['Checking uncertain squares...','Comprobando casillas dudosas...']],
+    ['Listo',['Ready','Listo']]
+  ]);
+  window.prog = prog = function(v,title,text){
+    if(UI_LANG==='en'){
+      const a=statusMap.get(title); if(a) title=a[0];
+      const b=statusMap.get(text); if(b) text=b[0];
+    }
+    return originalProg(v,title,text);
+  };
+
+  function ensureCoordLayer(orientation){
+    const wrap=document.querySelector('.boardWrap');
+    if(!wrap)return;
+    let layer=wrap.querySelector('.coordLayer');
+    if(!layer){
+      layer=document.createElement('div');
+      layer.className='coordLayer';
+      wrap.appendChild(layer);
+    }
+    if(layer.dataset.orientation===orientation && layer.childElementCount===16)return;
+    layer.dataset.orientation=orientation;
+    layer.innerHTML='';
+    const files=orientation==='black'?'hgfedcba':'abcdefgh';
+    const ranks=orientation==='black'?'12345678':'87654321';
+    for(let vr=0;vr<8;vr++){
+      const s=document.createElement('span');
+      s.className='coordOverlay rank '+((((vr+0)&1)?'onDark':'onLight'));
+      s.textContent=ranks[vr];
+      s.style.top=(vr*12.5)+'%';
+      layer.appendChild(s);
+    }
+    for(let vc=0;vc<8;vc++){
+      const s=document.createElement('span');
+      s.className='coordOverlay file '+((((7+vc)&1)?'onDark':'onLight'));
+      s.textContent=files[vc];
+      s.style.left=(vc*12.5)+'%';
+      layer.appendChild(s);
+    }
+  }
+
+  window.renderBoard = renderBoard = function(board,orientation,last){
+    const root=document.getElementById('board'); root.innerHTML='';
+    for(let vr=0;vr<8;vr++) for(let vc=0;vc<8;vc++){
+      const br=orientation==='black'?7-vr:vr,bc=orientation==='black'?7-vc:vc;
+      const el=document.createElement('div'); el.className='sq '+(((vr+vc)&1)?'dark':'light');
+      if(last&&last.from===br*8+bc)el.classList.add('lastFrom'); if(last&&last.to===br*8+bc)el.classList.add('lastTo');
+      const p=board[br*8+bc]; if(p){ const im=document.createElement('img'); im.className='pieceImg'; im.alt=''; im.draggable=false; im.src=pieceSrc(p); el.appendChild(im); }
+      root.appendChild(el);
+    }
+    ensureCoordLayer(orientation);
+  };
+
+  function solutionRows(){
+    const out=[]; if(!S.line || !S.line.length) return out;
+    if(S.start.side==='b'){
+      out.push({n:'1…',moves:S.line[0].san});
+      let no=2; for(let i=1;i<S.line.length;i+=2,no++){out.push({n:no+'.',moves:S.line[i].san+(S.line[i+1]?'  '+S.line[i+1].san:'')});}
+    }else{
+      let no=1; for(let i=0;i<S.line.length;i+=2,no++){out.push({n:no+'.',moves:S.line[i].san+(S.line[i+1]?'  '+S.line[i+1].san:'')});}
+    }
+    return out;
+  }
+
+  function refreshResultUI(){
+    if(!S.start || !S.line?.length) return;
+    document.getElementById('sidePill').textContent=S.start.side==='b'?t('sideB'):t('sideW');
+    document.getElementById('goalPill').textContent=t('forced')+' '+S.mateN;
+    document.getElementById('mate').textContent=t('mate')+' '+S.mateN;
+    const list=document.getElementById('solutionList'); list.innerHTML='';
+    solutionRows().forEach(r=>{const row=document.createElement('div');row.className='solutionRow';row.innerHTML='<span class="n">'+r.n+'</span><strong>'+r.moves+'</strong>';list.appendChild(row);});
+    const play=document.getElementById('play'); if(!S.playing) play.innerHTML='▶ <span>'+t('play')+'</span>';
+    document.getElementById('share').querySelector('span').textContent=t('share');
+    document.getElementById('download').querySelector('span').textContent=t('download');
+    document.getElementById('exportNote').textContent='';
+  }
+
+  const coreAnalyze = window.analyze || analyze;
+  window.analyze = analyze = async function(url){
+    await coreAnalyze(url);
+    if(document.getElementById('result').classList.contains('active')){
+      refreshResultUI();
+      renderBoard(S.positions[0].b,S.orientation,null);
+      tryReadPromptText().catch(()=>{});
+      S.videoBlob=null; S.videoMime=null;
+    }else if(document.getElementById('error').classList.contains('active') && UI_LANG==='en'){
+      const e=document.getElementById('errorText');
+      if(e.textContent.includes('tablero')) e.textContent='I found the board, but I could not reconstruct a forced mate with enough confidence.';
+      else e.textContent='Try another screenshot, or crop a little closer to the board. The puzzle prompt can stay in the image.';
+    }
+  };
+
+  const coreStop = window.stopPlay || stopPlay;
+  window.stopPlay = stopPlay = function(){ coreStop(); const b=document.getElementById('play'); if(b) b.innerHTML='▶ <span>'+t('play')+'</span>'; };
+  const coreToggle = window.togglePlay || togglePlay;
+  window.togglePlay = togglePlay = function(){ coreToggle(); const b=document.getElementById('play'); if(b) b.innerHTML=S.playing?'❚❚ <span>'+t('pause')+'</span>':'▶ <span>'+t('play')+'</span>'; };
+  document.getElementById('play').onclick=togglePlay;
+
+  async function tryReadPromptText(){
+    if(!window.Tesseract || !S.img || !S.rect) return;
+    try{
+      const W=Math.min(920,S.img.naturalWidth||S.img.width),scale=W/(S.img.naturalWidth||S.img.width),H=Math.round((S.img.naturalHeight||S.img.height)*scale);
+      const cv=document.createElement('canvas');cv.width=W;cv.height=H;const ctx=cv.getContext('2d');ctx.drawImage(S.img,0,0,W,H);ctx.fillStyle='#fff';ctx.fillRect(S.rect.x*scale,S.rect.y*scale,S.rect.s*scale,S.rect.s*scale);
+      const res=await Tesseract.recognize(cv,'eng',{logger:()=>{}}); const text=(res?.data?.text||'').replace(/\s+/g,' ').trim();
+      if(!text) return;
+      const hit=text.match(/(?:black|white).{0,28}(?:move|mate)|(?:mate|checkmate).{0,25}/i); if(hit){document.getElementById('problemText').textContent=hit[0];}
+    }catch(e){}
+  }
+
+  function preloadPieces(){
+    if(preloadPieces.cache) return preloadPieces.cache;
+    const chars=['K','Q','R','B','N','P','k','q','r','b','n','p'];
+    preloadPieces.cache=Promise.all(chars.map(p=>new Promise((res,rej)=>{const im=new Image();im.crossOrigin='anonymous';im.onload=()=>res([p,im]);im.onerror=rej;im.src=pieceSrc(p);}))).then(entries=>Object.fromEntries(entries));
+    return preloadPieces.cache;
+  }
+
+  function canvasSquare(index,orientation,boardX,boardY,cell){
+    let r=(index/8)|0,c=index%8; if(orientation==='black'){r=7-r;c=7-c;} return {x:boardX+c*cell,y:boardY+r*cell};
+  }
+
+  function drawVideoFrame(ctx,images,position,orientation,move=null,p=1,currentText=''){
+    const W=1080,H=1350,board=900,boardX=90,boardY=190,cell=board/8;
+    ctx.fillStyle='#090b0d';ctx.fillRect(0,0,W,H);
+    ctx.fillStyle='#f5f6f2';ctx.font='800 44px -apple-system,BlinkMacSystemFont,Arial';ctx.fillText('MateShot',90,82);
+    ctx.fillStyle='#d6ff58';ctx.beginPath();ctx.arc(66,68,8,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#a9b0b8';ctx.font='600 24px -apple-system,BlinkMacSystemFont,Arial';ctx.fillText((S.start.side==='b'?'Black':'White')+' to move  ·  Forced mate in '+S.mateN,90,132);
+    for(let vr=0;vr<8;vr++)for(let vc=0;vc<8;vc++){ctx.fillStyle=((vr+vc)&1)?'#b98c68':'#f0d9b5';ctx.fillRect(boardX+vc*cell,boardY+vr*cell,cell,cell);}
+    const b=position.b; let moving=null;
+    if(move){moving=b[move.from];}
+    for(let i=0;i<64;i++){
+      const pc=b[i]; if(!pc) continue; if(move && (i===move.from || i===move.to)) continue;
+      const q=canvasSquare(i,orientation,boardX,boardY,cell);ctx.drawImage(images[pc],q.x+cell*.06,q.y+cell*.06,cell*.88,cell*.88);
+    }
+    if(move){
+      const a=canvasSquare(move.from,orientation,boardX,boardY,cell),z=canvasSquare(move.to,orientation,boardX,boardY,cell),e=p<.5?2*p:1-(Math.pow(-2*p+2,2)/2),x=a.x+(z.x-a.x)*e,y=a.y+(z.y-a.y)*e;
+      if(moving)ctx.drawImage(images[moving],x+cell*.06,y+cell*.06,cell*.88,cell*.88);
+    }
+    ctx.fillStyle='#f5f6f2';ctx.font='800 42px -apple-system,BlinkMacSystemFont,Arial';ctx.fillText(t('mate')+' '+S.mateN,90,1158);
+    ctx.fillStyle='#c6ccd3';ctx.font='600 30px -apple-system,BlinkMacSystemFont,Arial';ctx.fillText(currentText||notation(S.line,S.start.side),90,1210,840);
+    ctx.fillStyle='#6f7781';ctx.font='700 24px -apple-system,BlinkMacSystemFont,Arial';ctx.textAlign='right';ctx.fillText('MateShot',990,1297);ctx.textAlign='left';
+  }
+
+  async function buildVideo(){
+    if(S.videoBlob) return {blob:S.videoBlob,mime:S.videoMime};
+    if(!S.positions?.length || !S.line?.length) throw new Error('No solution');
+    const canvas=document.createElement('canvas');canvas.width=1080;canvas.height=1350;const ctx=canvas.getContext('2d');
+    if(!canvas.captureStream || !window.MediaRecorder) throw new Error(t('videoUnsupported'));
+    const images=await preloadPieces();
+    const candidates=['video/mp4;codecs=avc1.42E01E','video/mp4','video/webm;codecs=vp9','video/webm;codecs=vp8','video/webm'];
+    const mime=candidates.find(x=>MediaRecorder.isTypeSupported?.(x))||'';
+    const stream=canvas.captureStream(30),chunks=[];const rec=new MediaRecorder(stream,mime?{mimeType:mime}:undefined);rec.ondataavailable=e=>{if(e.data&&e.data.size)chunks.push(e.data);};
+    const stopped=new Promise((res,rej)=>{rec.onstop=res;rec.onerror=e=>rej(e.error||e);}); rec.start(250);
+    drawVideoFrame(ctx,images,S.positions[0],S.orientation,null,1,''); await new Promise(r=>setTimeout(r,650));
+    const fps=30,moveMs=720,holdMs=260;
+    for(let i=0;i<S.line.length;i++){
+      const frames=Math.round(moveMs/1000*fps),before=S.positions[i],mv=S.line[i];
+      for(let f=0;f<frames;f++){drawVideoFrame(ctx,images,before,S.orientation,mv,f/(frames-1),mv.san);await new Promise(r=>setTimeout(r,1000/fps));}
+      drawVideoFrame(ctx,images,S.positions[i+1],S.orientation,null,1,mv.san);await new Promise(r=>setTimeout(r,holdMs));
+    }
+    drawVideoFrame(ctx,images,S.positions[S.positions.length-1],S.orientation,null,1,'Checkmate');await new Promise(r=>setTimeout(r,800));rec.stop();await stopped;stream.getTracks().forEach(x=>x.stop());
+    const actual=mime||rec.mimeType||'video/webm',blob=new Blob(chunks,{type:actual});S.videoBlob=blob;S.videoMime=actual;return{blob,mime:actual};
+  }
+
+  function extension(mime){return mime.includes('mp4')?'mp4':'webm';}
+  function solutionText(){return t('mate')+' '+S.mateN+'\n'+solutionRows().map(r=>r.n+' '+r.moves).join('\n');}
+
+  async function downloadReplay(){
+    const btn=document.getElementById('download'),label=btn.querySelector('span'),note=document.getElementById('exportNote'); const old=label.textContent; label.textContent=t('rendering');btn.disabled=true;note.textContent='';
+    try{const {blob,mime}=await buildVideo();const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='mateshot-mate-'+S.mateN+'.'+extension(mime);document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),4000);toast(t('downloaded'));}
+    catch(e){note.textContent=e.message||t('videoUnsupported');}
+    finally{btn.disabled=false;label.textContent=old;}
+  }
+
+  async function shareReplay(){
+    const btn=document.getElementById('share'),label=btn.querySelector('span'),note=document.getElementById('exportNote'); const old=label.textContent;label.textContent=t('rendering');btn.disabled=true;note.textContent='';
+    try{
+      const {blob,mime}=await buildVideo();const file=new File([blob],'mateshot-mate-'+S.mateN+'.'+extension(mime),{type:mime});
+      if(navigator.share && navigator.canShare?.({files:[file]})){await navigator.share({files:[file],title:'MateShot',text:solutionText()});}
+      else if(navigator.share){await navigator.share({title:'MateShot',text:solutionText()});}
+      else{await navigator.clipboard.writeText(solutionText());toast(t('shareFallback'));}
+    }catch(e){ if(e?.name!=='AbortError') note.textContent=e.message||t('videoUnsupported'); }
+    finally{btn.disabled=false;label.textContent=old;}
+  }
+
+  document.getElementById('download').onclick=downloadReplay;
+  document.getElementById('share').onclick=shareReplay;
+
+  const speed=document.getElementById('speed'); if(speed) speed.value='950';
+})();
+
+
+/* ===== solve6/video-fix.js ===== */
+/* MateShot video export v2: faster render, monotonic motion and full localization. */
+(() => {
+  const LANG = (navigator.language || 'en').toLowerCase().startsWith('es') ? 'es' : 'en';
+  const TXT = LANG === 'es' ? {
+    sideB:'Mueven negras', sideW:'Mueven blancas', forced:'Mate forzado en', mate:'Mate en', checkmate:'Jaque mate',
+    rendering:'Creando vídeo…', downloaded:'Vídeo descargado', unsupported:'Este navegador todavía no permite exportar el vídeo.', copied:'Solución copiada'
+  } : {
+    sideB:'Black to move', sideW:'White to move', forced:'Forced mate in', mate:'Mate in', checkmate:'Checkmate',
+    rendering:'Building video…', downloaded:'Video downloaded', unsupported:'Video export is not supported by this browser yet.', copied:'Solution copied'
+  };
+  const PIECE_BASE='https://lichess1.org/assets/piece/cburnett/';
+  const pieceCode=p=>(p===p.toUpperCase()?'w':'b')+p.toUpperCase();
+  const pieceSrc=p=>PIECE_BASE+pieceCode(p)+'.svg';
+  const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+  function toast2(msg){const el=document.getElementById('toast');if(!el)return;el.textContent=msg;el.classList.add('show');clearTimeout(toast2._t);toast2._t=setTimeout(()=>el.classList.remove('show'),1800);}
+  function preloadPiecesFast(){if(preloadPiecesFast.cache)return preloadPiecesFast.cache;const chars=['K','Q','R','B','N','P','k','q','r','b','n','p'];preloadPiecesFast.cache=Promise.all(chars.map(p=>new Promise((resolve,reject)=>{const im=new Image();im.crossOrigin='anonymous';im.onload=()=>resolve([p,im]);im.onerror=reject;im.src=pieceSrc(p);}))).then(x=>Object.fromEntries(x));return preloadPiecesFast.cache;}
+  function canvasSquare(index,orientation,bx,by,cell){let r=(index/8)|0,c=index%8;if(orientation==='black'){r=7-r;c=7-c;}return{x:bx+c*cell,y:by+r*cell};}
+  function easeInOutQuad(p){return p<0.5?2*p*p:1-Math.pow(-2*p+2,2)/2;}
+  function currentMoveLabel(index){if(!S?.line?.[index])return'';const mv=S.line[index],startsBlack=S.start.side==='b';if(startsBlack){if(index===0)return'1… '+mv.san;const n=Math.floor((index+1)/2)+1;return index%2===1?n+'. '+mv.san:n+'… '+mv.san;}const n=Math.floor(index/2)+1;return index%2===0?n+'. '+mv.san:n+'… '+mv.san;}
+  function drawFrame(ctx,images,position,orientation,move=null,p=1,label=''){
+    const W=720,H=900,board=600,bx=60,by=112,cell=board/8;ctx.fillStyle='#090b0d';ctx.fillRect(0,0,W,H);ctx.fillStyle='#d6ff58';ctx.beginPath();ctx.arc(44,43,5.5,0,Math.PI*2);ctx.fill();ctx.fillStyle='#f5f6f2';ctx.font='800 30px -apple-system,BlinkMacSystemFont,Arial';ctx.fillText('MateShot',60,52);ctx.fillStyle='#a9b0b8';ctx.font='600 16px -apple-system,BlinkMacSystemFont,Arial';const side=S.start.side==='b'?TXT.sideB:TXT.sideW;ctx.fillText(side+'  ·  '+TXT.forced+' '+S.mateN,60,82);
+    for(let vr=0;vr<8;vr++)for(let vc=0;vc<8;vc++){ctx.fillStyle=((vr+vc)&1)?'#b98c68':'#f0d9b5';ctx.fillRect(bx+vc*cell,by+vr*cell,cell,cell);}
+    if(move){const hs=canvasSquare(move.from,orientation,bx,by,cell),ht=canvasSquare(move.to,orientation,bx,by,cell);ctx.fillStyle='rgba(214,255,88,.24)';ctx.fillRect(hs.x,hs.y,cell,cell);ctx.fillStyle='rgba(214,255,88,.43)';ctx.fillRect(ht.x,ht.y,cell,cell);}
+    const b=position.b,moving=move?b[move.from]:null;for(let i=0;i<64;i++){const pc=b[i];if(!pc)continue;if(move&&(i===move.from||i===move.to))continue;const q=canvasSquare(i,orientation,bx,by,cell);ctx.drawImage(images[pc],q.x+cell*.055,q.y+cell*.055,cell*.89,cell*.89);}
+    if(move){const captured=b[move.to];if(captured&&p<0.82){const z=canvasSquare(move.to,orientation,bx,by,cell);ctx.drawImage(images[captured],z.x+cell*.055,z.y+cell*.055,cell*.89,cell*.89);}const a=canvasSquare(move.from,orientation,bx,by,cell),z=canvasSquare(move.to,orientation,bx,by,cell),e=easeInOutQuad(Math.max(0,Math.min(1,p))),x=a.x+(z.x-a.x)*e,y=a.y+(z.y-a.y)*e;if(moving)ctx.drawImage(images[moving],x+cell*.055,y+cell*.055,cell*.89,cell*.89);}
+    ctx.fillStyle='#f5f6f2';ctx.font='800 29px -apple-system,BlinkMacSystemFont,Arial';ctx.fillText(TXT.mate+' '+S.mateN,60,765);ctx.fillStyle='#c6ccd3';ctx.font='650 20px -apple-system,BlinkMacSystemFont,Arial';ctx.fillText(label||'',60,803,570);ctx.fillStyle='#6f7781';ctx.font='700 16px -apple-system,BlinkMacSystemFont,Arial';ctx.textAlign='right';ctx.fillText('MateShot',660,862);ctx.textAlign='left';
+  }
+  async function buildVideoFast(){if(!S?.positions?.length||!S?.line?.length)throw new Error('No solution');const key=S.orientation+'|'+S.start.side+'|'+S.mateN+'|'+notation(S.line,S.start.side);if(S.fastVideoBlob&&S.fastVideoKey===key)return{blob:S.fastVideoBlob,mime:S.fastVideoMime};const canvas=document.createElement('canvas');canvas.width=720;canvas.height=900;const ctx=canvas.getContext('2d',{alpha:false});if(!canvas.captureStream||!window.MediaRecorder)throw new Error(TXT.unsupported);const images=await preloadPiecesFast();const candidates=['video/mp4;codecs=avc1.42E01E','video/mp4','video/webm;codecs=vp9','video/webm;codecs=vp8','video/webm'],mime=candidates.find(x=>MediaRecorder.isTypeSupported?.(x))||'',fps=24,stream=canvas.captureStream(fps),chunks=[],opts={videoBitsPerSecond:2200000};if(mime)opts.mimeType=mime;const rec=new MediaRecorder(stream,opts);rec.ondataavailable=e=>{if(e.data&&e.data.size)chunks.push(e.data);};const stopped=new Promise((resolve,reject)=>{rec.onstop=resolve;rec.onerror=e=>reject(e.error||e);});rec.start(200);drawFrame(ctx,images,S.positions[0],S.orientation,null,1,'');await sleep(300);const moveMs=420,holdMs=90;for(let i=0;i<S.line.length;i++){const frames=Math.max(7,Math.round(moveMs/1000*fps)),before=S.positions[i],mv=S.line[i],moveLabel=currentMoveLabel(i);for(let f=0;f<frames;f++){const p=frames===1?1:f/(frames-1);drawFrame(ctx,images,before,S.orientation,mv,p,moveLabel);await sleep(1000/fps);}drawFrame(ctx,images,S.positions[i],S.orientation,mv,1,moveLabel);await sleep(holdMs);}drawFrame(ctx,images,S.positions[S.positions.length-2],S.orientation,S.line[S.line.length-1],1,TXT.checkmate);await sleep(450);rec.stop();await stopped;stream.getTracks().forEach(x=>x.stop());const actual=mime||rec.mimeType||'video/webm',blob=new Blob(chunks,{type:actual});S.fastVideoKey=key;S.fastVideoBlob=blob;S.fastVideoMime=actual;return{blob,mime:actual};}
+  const ext=mime=>mime.includes('mp4')?'mp4':'webm';
+  function solutionText(){const rows=[];if(S.start.side==='b'){rows.push('1… '+S.line[0].san);let no=2;for(let i=1;i<S.line.length;i+=2,no++)rows.push(no+'. '+S.line[i].san+(S.line[i+1]?' '+S.line[i+1].san:''));}else{let no=1;for(let i=0;i<S.line.length;i+=2,no++)rows.push(no+'. '+S.line[i].san+(S.line[i+1]?' '+S.line[i+1].san:''));}return TXT.mate+' '+S.mateN+'\n'+rows.join('\n');}
+  async function downloadFast(){const btn=document.getElementById('download'),label=btn?.querySelector('span'),note=document.getElementById('exportNote');if(!btn||!label)return;const old=label.textContent;label.textContent=TXT.rendering;btn.disabled=true;if(note)note.textContent='';try{const{blob,mime}=await buildVideoFast(),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='mateshot-mate-'+S.mateN+'.'+ext(mime);document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),4000);toast2(TXT.downloaded);}catch(e){if(note)note.textContent=e.message||TXT.unsupported;}finally{btn.disabled=false;label.textContent=old;}}
+  async function shareFast(){const btn=document.getElementById('share'),label=btn?.querySelector('span'),note=document.getElementById('exportNote');if(!btn||!label)return;const old=label.textContent;label.textContent=TXT.rendering;btn.disabled=true;if(note)note.textContent='';try{const{blob,mime}=await buildVideoFast(),file=new File([blob],'mateshot-mate-'+S.mateN+'.'+ext(mime),{type:mime});if(navigator.share&&navigator.canShare?.({files:[file]}))await navigator.share({files:[file],title:'MateShot',text:solutionText()});else if(navigator.share)await navigator.share({title:'MateShot',text:solutionText()});else{await navigator.clipboard.writeText(solutionText());toast2(TXT.copied);}}catch(e){if(e?.name!=='AbortError'&&note)note.textContent=e.message||TXT.unsupported;}finally{btn.disabled=false;label.textContent=old;}}
+  const download=document.getElementById('download'),share=document.getElementById('share');if(download)download.onclick=downloadFast;if(share)share.onclick=shareFast;const result=document.getElementById('result');if(result){const observer=new MutationObserver(()=>{if(result.classList.contains('active'))preloadPiecesFast().catch(()=>{});});observer.observe(result,{attributes:true,attributeFilter:['class']});}
+})();
+/* MateShot replay v3: smooth in-browser piece motion + matching highlights. */
+(() => {
+  const lang=(navigator.language||'en').toLowerCase().startsWith('es')?'es':'en';
+  const LABELS=lang==='es'?{play:'Ver solución',pause:'Pausa'}:{play:'Play solution',pause:'Pause'};
+  const PIECE_BASE='https://lichess1.org/assets/piece/cburnett/';
+  const pieceCode=p=>(p===p.toUpperCase()?'w':'b')+p.toUpperCase();
+  const pieceSrc=p=>PIECE_BASE+pieceCode(p)+'.svg';
+  const style=document.createElement('style');style.textContent=`#board{position:relative}.webMoveOverlay{position:absolute;z-index:8;pointer-events:none;will-change:transform;object-fit:contain;filter:drop-shadow(0 1px 1px rgba(0,0,0,.16))}.solutionRow.active{background:rgba(214,255,88,.11);border-color:rgba(214,255,88,.28)}.solutionRow.active .n{color:#d6ff58}`;document.head.appendChild(style);
+  let animToken=0,animState=null;
+  function ease(p){return p<.5?4*p*p*p:1-Math.pow(-2*p+2,3)/2;}
+  function visualIndex(index){return S.orientation==='black'?63-index:index;}
+  function cellFor(index){return document.getElementById('board')?.children?.[visualIndex(index)]||null;}
+  function activeRowForMove(i){if(i<0)return-1;return S.start?.side==='b'?(i===0?0:Math.floor((i+1)/2)):Math.floor(i/2);}
+  function markActiveMove(i){const rows=[...document.querySelectorAll('#solutionList .solutionRow')],row=activeRowForMove(i);rows.forEach((el,n)=>el.classList.toggle('active',n===row));}
+  function playLabel(){const b=document.getElementById('play');if(b)b.innerHTML='▶ <span>'+LABELS.play+'</span>';}
+  function pauseLabel(){const b=document.getElementById('play');if(b)b.innerHTML='❚❚ <span>'+LABELS.pause+'</span>';}
+  function settleAnimation(){if(!animState)return;const a=animState;S.step=a.progress>=.5?a.toStep:a.fromStep;const last=S.step?S.line[S.step-1]:null;renderBoard(S.positions[S.step].b,S.orientation,last);markActiveMove(S.step-1);animState=null;}
+  window.stopPlay=stopPlay=function(){S.playing=false;clearTimeout(S.timer);S.timer=null;animToken++;settleAnimation();playLabel();};
+  window.gotoStep=gotoStep=function(n){animToken++;animState=null;S.step=Math.max(0,Math.min(S.positions.length-1,n));const last=S.step?S.line[S.step-1]:null;renderBoard(S.positions[S.step].b,S.orientation,last);markActiveMove(S.step-1);};
+  async function animateForward(fromStep){if(fromStep>=S.positions.length-1)return false;const token=++animToken,mv=S.line[fromStep],before=S.positions[fromStep],after=S.positions[fromStep+1];renderBoard(before.b,S.orientation,mv);markActiveMove(fromStep);await new Promise(requestAnimationFrame);const root=document.getElementById('board'),src=cellFor(mv.from),dst=cellFor(mv.to);if(!root||!src||!dst){S.step=fromStep+1;renderBoard(after.b,S.orientation,mv);return true;}const srcImg=src.querySelector('.pieceImg'),dstImg=dst.querySelector('.pieceImg'),moving=before.b[mv.from];if(!moving){S.step=fromStep+1;renderBoard(after.b,S.orientation,mv);return true;}const rr=root.getBoundingClientRect(),sr=src.getBoundingClientRect(),dr=dst.getBoundingClientRect();if(srcImg)srcImg.style.visibility='hidden';const overlay=document.createElement('img');overlay.className='webMoveOverlay';overlay.src=pieceSrc(moving);overlay.draggable=false;const pad=sr.width*.06;overlay.style.left=(sr.left-rr.left+pad)+'px';overlay.style.top=(sr.top-rr.top+pad)+'px';overlay.style.width=(sr.width-pad*2)+'px';overlay.style.height=(sr.height-pad*2)+'px';root.appendChild(overlay);const dx=dr.left-sr.left,dy=dr.top-sr.top,duration=430,start=performance.now();animState={fromStep,toStep:fromStep+1,progress:0};await new Promise(resolve=>{function frame(now){if(token!==animToken){overlay.remove();resolve();return;}const p=Math.max(0,Math.min(1,(now-start)/duration));animState.progress=p;const e=ease(p);overlay.style.transform=`translate3d(${dx*e}px,${dy*e}px,0)`;if(dstImg)dstImg.style.visibility=p<.82?'visible':'hidden';if(p<1)requestAnimationFrame(frame);else{overlay.remove();resolve();}}requestAnimationFrame(frame);});if(token!==animToken)return false;animState=null;S.step=fromStep+1;renderBoard(after.b,S.orientation,mv);markActiveMove(fromStep);return true;}
+  window.playLoop=playLoop=async function(){if(!S.playing)return;if(S.step>=S.positions.length-1){stopPlay();return;}const ok=await animateForward(S.step);if(!ok||!S.playing)return;S.timer=setTimeout(playLoop,120);};
+  window.togglePlay=togglePlay=function(){if(S.playing){stopPlay();return;}if(S.step>=S.positions.length-1)gotoStep(0);S.playing=true;pauseLabel();S.timer=setTimeout(playLoop,100);};
+  const play=document.getElementById('play');if(play)play.onclick=togglePlay;const prev=document.getElementById('prev'),next=document.getElementById('next');if(prev)prev.onclick=()=>{stopPlay();gotoStep(S.step-1);};if(next)next.onclick=async()=>{stopPlay();if(S.step<S.positions.length-1)await animateForward(S.step);};markActiveMove((S?.step||0)-1);
+})();
+
+
+/* ===== solve6/finish-fx.js ===== */
+/* MateShot finish FX v5: repeatable mate pulse + video coordinates. */
+(() => {
+  const LANG=(navigator.language||'en').toLowerCase().startsWith('es')?'es':'en';
+  const TXT=LANG==='es'?{
+    sideB:'Mueven negras',sideW:'Mueven blancas',forced:'Mate forzado en',mate:'Mate en',checkmate:'Jaque mate',
+    rendering:'Creando vídeo…',downloaded:'Vídeo descargado',shareFallback:'No se puede abrir Compartir aquí. He descargado el vídeo.',unsupported:'Este navegador todavía no permite exportar el vídeo.',copied:'Solución copiada'
+  }:{
+    sideB:'Black to move',sideW:'White to move',forced:'Forced mate in',mate:'Mate in',checkmate:'Checkmate',
+    rendering:'Building video…',downloaded:'Video downloaded',shareFallback:'Sharing is blocked here, so I downloaded the video instead.',unsupported:'Video export is not supported by this browser yet.',copied:'Solution copied'
+  };
+
+  const PIECE_BASE='https://lichess1.org/assets/piece/cburnett/';
+  const pieceCode=p=>(p===p.toUpperCase()?'w':'b')+p.toUpperCase();
+  const pieceSrc=p=>PIECE_BASE+pieceCode(p)+'.svg';
+  const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+
+  function toast(msg){
+    const el=document.getElementById('toast');if(!el)return;
+    el.textContent=msg;el.classList.add('show');clearTimeout(toast._t);
+    toast._t=setTimeout(()=>el.classList.remove('show'),1800);
+  }
+
+  function preloadPieces(){
+    if(preloadPieces.cache)return preloadPieces.cache;
+    const chars=['K','Q','R','B','N','P','k','q','r','b','n','p'];
+    preloadPieces.cache=Promise.all(chars.map(p=>new Promise((resolve,reject)=>{
+      const im=new Image();im.crossOrigin='anonymous';im.onload=()=>resolve([p,im]);im.onerror=reject;im.src=pieceSrc(p);
+    }))).then(x=>Object.fromEntries(x));
+    return preloadPieces.cache;
+  }
+
+  function roundRectPath(ctx,x,y,w,h,r){
+    r=Math.min(r,w/2,h/2);
+    ctx.beginPath();
+    ctx.moveTo(x+r,y);
+    ctx.arcTo(x+w,y,x+w,y+h,r);
+    ctx.arcTo(x+w,y+h,x,y+h,r);
+    ctx.arcTo(x,y+h,x,y,r);
+    ctx.arcTo(x,y,x+w,y,r);
+    ctx.closePath();
+  }
+
+  function canvasSquare(index,orientation,bx,by,cell){
+    let r=(index/8)|0,c=index%8;
+    if(orientation==='black'){r=7-r;c=7-c;}
+    return{x:bx+c*cell,y:by+r*cell};
+  }
+
+  function ease(p){return p<.5?2*p*p:1-Math.pow(-2*p+2,2)/2;}
+
+  function currentMoveLabel(index){
+    if(!S?.line?.[index])return'';
+    const mv=S.line[index],startsBlack=S.start.side==='b';
+    if(startsBlack){
+      if(index===0)return'1… '+mv.san;
+      const n=Math.floor((index+1)/2)+1;
+      return index%2===1?n+'. '+mv.san:n+'… '+mv.san;
+    }
+    const n=Math.floor(index/2)+1;
+    return index%2===0?n+'. '+mv.san:n+'… '+mv.san;
+  }
+
+  function matedKingIndex(position){
+    if(!position?.b)return-1;
+    const k=position.side==='w'?'K':'k';
+    return position.b.indexOf(k);
+  }
+
+  function drawScene(ctx,images,position,orientation,opts={}){
+    const W=720,H=720,board=560,bx=80,by=80,cell=board/8,radius=15;
+    const motion=opts.motionMove||null,highlight=opts.highlightMove||motion;
+    const p=opts.progress??1,label=opts.label||'';
+    const mateKing=Number.isInteger(opts.mateKing)?opts.mateKing:-1;
+    const mateIntensity=Math.max(0,Math.min(1,opts.mateIntensity||0));
+    const labelAlpha=opts.labelAlpha==null?1:opts.labelAlpha;
+
+    ctx.fillStyle='#090b0d';ctx.fillRect(0,0,W,H);
+
+    ctx.save();
+    ctx.font='800 26px -apple-system,BlinkMacSystemFont,Arial';
+    const logoText='MateShot',tw=ctx.measureText(logoText).width,total=tw+22,startX=(W-total)/2;
+    ctx.fillStyle='#d6ff58';ctx.beginPath();ctx.arc(startX+5,39,5,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#f5f6f2';ctx.textAlign='left';ctx.textBaseline='middle';ctx.fillText(logoText,startX+18,39);
+    ctx.restore();
+
+    ctx.save();
+    roundRectPath(ctx,bx,by,board,board,radius);
+    ctx.clip();
+
+    for(let vr=0;vr<8;vr++)for(let vc=0;vc<8;vc++){
+      ctx.fillStyle=((vr+vc)&1)?'#b98c68':'#f0d9b5';
+      ctx.fillRect(bx+vc*cell,by+vr*cell,cell,cell);
+    }
+
+    if(highlight){
+      const hs=canvasSquare(highlight.from,orientation,bx,by,cell);
+      const ht=canvasSquare(highlight.to,orientation,bx,by,cell);
+      ctx.fillStyle='rgba(214,255,88,.24)';ctx.fillRect(hs.x,hs.y,cell,cell);
+      ctx.fillStyle='rgba(214,255,88,.43)';ctx.fillRect(ht.x,ht.y,cell,cell);
+    }
+
+    if(mateKing>=0){
+      const k=canvasSquare(mateKing,orientation,bx,by,cell);
+      const a=.16+.34*mateIntensity;
+      ctx.save();
+      ctx.shadowColor=`rgba(255,72,72,${.20+.45*mateIntensity})`;
+      ctx.shadowBlur=8+22*mateIntensity;
+      ctx.fillStyle=`rgba(255,62,62,${a})`;
+      ctx.fillRect(k.x,k.y,cell,cell);
+      ctx.strokeStyle=`rgba(255,105,105,${.45+.45*mateIntensity})`;
+      ctx.lineWidth=2+2*mateIntensity;
+      ctx.strokeRect(k.x+2,k.y+2,cell-4,cell-4);
+      ctx.restore();
+    }
+
+    const b=position.b;
+    const moving=motion?b[motion.from]:null;
+
+    for(let i=0;i<64;i++){
+      const pc=b[i];if(!pc)continue;
+      if(motion&&(i===motion.from||i===motion.to))continue;
+      const q=canvasSquare(i,orientation,bx,by,cell);
+      ctx.drawImage(images[pc],q.x+cell*.055,q.y+cell*.055,cell*.89,cell*.89);
+    }
+
+    if(motion){
+      const captured=b[motion.to];
+      if(captured&&p<.82){
+        const z=canvasSquare(motion.to,orientation,bx,by,cell);
+        ctx.drawImage(images[captured],z.x+cell*.055,z.y+cell*.055,cell*.89,cell*.89);
+      }
+      const a=canvasSquare(motion.from,orientation,bx,by,cell);
+      const z=canvasSquare(motion.to,orientation,bx,by,cell);
+      const e=ease(Math.max(0,Math.min(1,p)));
+      const x=a.x+(z.x-a.x)*e,y=a.y+(z.y-a.y)*e;
+      if(moving)ctx.drawImage(images[moving],x+cell*.055,y+cell*.055,cell*.89,cell*.89);
+    }
+
+    const files=orientation==='black'?'hgfedcba':'abcdefgh';
+    const ranks=orientation==='black'?'12345678':'87654321';
+    ctx.font='760 10px -apple-system,BlinkMacSystemFont,Arial';
+    ctx.textBaseline='top';ctx.textAlign='left';
+    for(let vr=0;vr<8;vr++){
+      const isDark=((vr+0)&1)===1;
+      ctx.fillStyle=isDark?'rgba(247,245,238,.76)':'rgba(92,70,52,.66)';
+      ctx.fillText(ranks[vr],bx+6,by+vr*cell+5);
+    }
+    ctx.textBaseline='alphabetic';ctx.textAlign='right';
+    for(let vc=0;vc<8;vc++){
+      const isDark=((7+vc)&1)===1;
+      ctx.fillStyle=isDark?'rgba(247,245,238,.76)':'rgba(92,70,52,.66)';
+      ctx.fillText(files[vc],bx+(vc+1)*cell-6,by+board-5);
+    }
+    ctx.restore();
+
+    ctx.save();
+    roundRectPath(ctx,bx,by,board,board,radius);
+    ctx.strokeStyle='rgba(255,255,255,.10)';ctx.lineWidth=1.4;ctx.stroke();
+    ctx.restore();
+
+    const side=S.start.side==='b'?TXT.sideB:TXT.sideW;
+    const context=side+' · '+TXT.mate+' '+S.mateN;
+    ctx.font='750 20px -apple-system,BlinkMacSystemFont,Arial';ctx.textBaseline='middle';
+    ctx.fillStyle='#f2f4ef';ctx.textAlign='left';ctx.fillText(context,bx,681);
+    ctx.save();ctx.globalAlpha=labelAlpha;
+    ctx.fillStyle=mateKing>=0?'#ff8585':'#c6ccd3';
+    ctx.font=mateKing>=0?'800 20px -apple-system,BlinkMacSystemFont,Arial':'750 20px -apple-system,BlinkMacSystemFont,Arial';
+    ctx.textAlign='right';ctx.fillText(label,bx+board,681);
+    ctx.restore();ctx.textAlign='left';
+  }
+
+  async function buildVideoPro(){
+    if(!S?.positions?.length||!S?.line?.length)throw new Error('No solution');
+    const key='v6-square|'+S.orientation+'|'+S.start.side+'|'+S.mateN+'|'+notation(S.line,S.start.side);
+    if(S.finishVideoBlob&&S.finishVideoKey===key)return{blob:S.finishVideoBlob,mime:S.finishVideoMime};
+
+    const canvas=document.createElement('canvas');canvas.width=720;canvas.height=720;
+    const ctx=canvas.getContext('2d',{alpha:false});
+    if(!canvas.captureStream||!window.MediaRecorder)throw new Error(TXT.unsupported);
+    const images=await preloadPieces();
+
+    const candidates=['video/mp4;codecs=avc1.42E01E','video/mp4','video/webm;codecs=vp9','video/webm;codecs=vp8','video/webm'];
+    const mime=candidates.find(x=>MediaRecorder.isTypeSupported?.(x))||'',fps=24;
+    const stream=canvas.captureStream(fps),chunks=[],opts={videoBitsPerSecond:1800000};
+    if(mime)opts.mimeType=mime;
+    const rec=new MediaRecorder(stream,opts);
+    rec.ondataavailable=e=>{if(e.data&&e.data.size)chunks.push(e.data);};
+    const stopped=new Promise((resolve,reject)=>{rec.onstop=resolve;rec.onerror=e=>reject(e.error||e);});
+    rec.start(200);
+
+    drawScene(ctx,images,S.positions[0],S.orientation,{label:''});
+    await sleep(280);
+
+    const moveMs=420,holdMs=95;
+    for(let i=0;i<S.line.length;i++){
+      const frames=Math.max(7,Math.round(moveMs/1000*fps));
+      const before=S.positions[i],after=S.positions[i+1],mv=S.line[i],moveLabel=currentMoveLabel(i);
+      for(let f=0;f<frames;f++){
+        const p=frames===1?1:f/(frames-1);
+        drawScene(ctx,images,before,S.orientation,{motionMove:mv,highlightMove:mv,progress:p,label:moveLabel});
+        await sleep(1000/fps);
+      }
+      drawScene(ctx,images,after,S.orientation,{highlightMove:mv,label:moveLabel});
+      await sleep(holdMs);
+    }
+
+    const finalPos=S.positions[S.positions.length-1];
+    const lastMove=S.line[S.line.length-1];
+    const king=matedKingIndex(finalPos);
+
+    const pulseMs=220,gapMs=90,pulseFrames=Math.max(5,Math.round(pulseMs/1000*fps));
+    for(let pulse=0;pulse<2;pulse++){
+      for(let f=0;f<pulseFrames;f++){
+        const q=pulseFrames===1?1:f/(pulseFrames-1);
+        const intensity=Math.sin(Math.PI*q);
+        const alpha=Math.min(1,(pulse*pulseMs+f*(1000/fps))/220);
+        drawScene(ctx,images,finalPos,S.orientation,{
+          highlightMove:lastMove,mateKing:king,mateIntensity:intensity,label:TXT.checkmate,labelAlpha:alpha
+        });
+        await sleep(1000/fps);
+      }
+      if(pulse===0){
+        drawScene(ctx,images,finalPos,S.orientation,{highlightMove:lastMove,mateKing:king,mateIntensity:.12,label:TXT.checkmate,labelAlpha:1});
+        await sleep(gapMs);
+      }
+    }
+
+    drawScene(ctx,images,finalPos,S.orientation,{highlightMove:lastMove,mateKing:king,mateIntensity:.22,label:TXT.checkmate,labelAlpha:1});
+    await sleep(760);
+
+    rec.stop();await stopped;stream.getTracks().forEach(x=>x.stop());
+    const actual=mime||rec.mimeType||'video/webm';
+    const blob=new Blob(chunks,{type:actual});
+    S.finishVideoKey=key;S.finishVideoBlob=blob;S.finishVideoMime=actual;
+    return{blob,mime:actual};
+  }
+
+  const ext=mime=>mime.includes('mp4')?'mp4':'webm';
+  function solutionText(){
+    const rows=[];
+    if(S.start.side==='b'){
+      rows.push('1… '+S.line[0].san);
+      let no=2;for(let i=1;i<S.line.length;i+=2,no++)rows.push(no+'. '+S.line[i].san+(S.line[i+1]?' '+S.line[i+1].san:''));
+    }else{
+      let no=1;for(let i=0;i<S.line.length;i+=2,no++)rows.push(no+'. '+S.line[i].san+(S.line[i+1]?' '+S.line[i+1].san:''));
+    }
+    return TXT.mate+' '+S.mateN+'\n'+rows.join('\n');
+  }
+
+  function saveVideoBlob(blob,mime){
+    const url=URL.createObjectURL(blob),a=document.createElement('a');
+    a.href=url;a.download='mateshot-mate-'+S.mateN+'.'+ext(mime);document.body.appendChild(a);a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),4000);
+  }
+
+  async function downloadPro(){
+    const btn=document.getElementById('download'),label=btn?.querySelector('span'),note=document.getElementById('exportNote');
+    if(!btn||!label)return;
+    const old=label.textContent;label.textContent=TXT.rendering;btn.disabled=true;if(note)note.textContent='';
+    try{const{blob,mime}=await buildVideoPro();saveVideoBlob(blob,mime);toast(TXT.downloaded);}
+    catch(e){if(note)note.textContent=e.message||TXT.unsupported;}
+    finally{btn.disabled=false;label.textContent=old;}
+  }
+
+  async function sharePro(){
+    const btn=document.getElementById('share'),label=btn?.querySelector('span'),note=document.getElementById('exportNote');
+    if(!btn||!label)return;
+    const old=label.textContent;label.textContent=TXT.rendering;btn.disabled=true;if(note)note.textContent='';
+    try{
+      const{blob,mime}=await buildVideoPro();
+      const file=new File([blob],'mateshot-mate-'+S.mateN+'.'+ext(mime),{type:mime});
+      if(navigator.share&&navigator.canShare?.({files:[file]})){
+        try{await navigator.share({files:[file],title:'MateShot',text:solutionText()});}
+        catch(e){
+          if(e?.name==='AbortError')return;
+          saveVideoBlob(blob,mime);toast(TXT.shareFallback);
+        }
+      }else{
+        saveVideoBlob(blob,mime);toast(TXT.shareFallback);
+      }
+    }catch(e){if(e?.name!=='AbortError'&&note)note.textContent=e.message||TXT.unsupported;}
+    finally{btn.disabled=false;label.textContent=old;}
+  }
+
+  const style=document.createElement('style');
+  style.textContent=`
+    .boardWrap{border-radius:14px!important;}
+    .actions{grid-template-columns:1fr!important;}
+    #download{display:none!important;}
+    .controls button:disabled{opacity:.25!important;cursor:default!important;filter:saturate(.35);}
+    #board{position:relative;isolation:isolate;}
+    .coord{
+      position:absolute!important;z-index:9!important;pointer-events:none;
+      font-size:9px!important;font-weight:760!important;line-height:1!important;
+      opacity:.72!important;text-shadow:none!important;
+      -webkit-font-smoothing:antialiased;transform:translateZ(0);
+    }
+    .coord.onLight{color:rgba(92,70,52,.68)!important;}
+    .coord.onDark{color:rgba(247,245,238,.80)!important;}
+    .coord.file{right:8px!important;bottom:5px!important;}
+    .coord.rank{left:8px!important;top:5px!important;}
+    .sq.mateKing::before{
+      content:"";position:absolute;inset:0;z-index:1;pointer-events:none;
+      background:rgba(255,64,64,.18);
+      box-shadow:inset 0 0 0 2px rgba(255,105,105,.65);
+      animation:mateshotMatePulse 1050ms ease-in-out 1;
+    }
+    @keyframes mateshotMatePulse{
+      0%,100%{background:rgba(255,64,64,.13);box-shadow:inset 0 0 0 2px rgba(255,105,105,.45),0 0 0 rgba(255,70,70,0)}
+      20%{background:rgba(255,64,64,.46);box-shadow:inset 0 0 0 3px rgba(255,120,120,.92),0 0 24px rgba(255,70,70,.48)}
+      43%{background:rgba(255,64,64,.14);box-shadow:inset 0 0 0 2px rgba(255,105,105,.50),0 0 6px rgba(255,70,70,.10)}
+      68%{background:rgba(255,64,64,.43);box-shadow:inset 0 0 0 3px rgba(255,120,120,.88),0 0 22px rgba(255,70,70,.42)}
+    }
+  `;
+  document.head.appendChild(style);
+
+  let lastMateKey='';
+  function applyWebMatePulse(){
+    if(!S?.positions?.length)return;
+    const boardEl=document.getElementById('board');
+    if(S.step!==S.positions.length-1){
+      lastMateKey='';
+      boardEl?.querySelectorAll('.mateKing').forEach(el=>el.classList.remove('mateKing'));
+      return;
+    }
+    const finalPos=S.positions[S.positions.length-1],king=matedKingIndex(finalPos);
+    if(king<0)return;
+    const key=notation(S.line,S.start.side)+'|'+S.step;
+    if(key===lastMateKey)return;
+    lastMateKey=key;
+    const vi=S.orientation==='black'?63-king:king;
+    const cell=boardEl?.children?.[vi];
+    if(!cell)return;
+    cell.classList.remove('mateKing');
+    void cell.offsetWidth;
+    cell.classList.add('mateKing');
+  }
+
+  function syncWebCoordinateContrast(){
+    const root=document.getElementById('board');
+    if(!root)return;
+    const cells=[...root.children];
+    cells.forEach((sq,i)=>{
+      const vr=Math.floor(i/8),vc=i%8,isDark=((vr+vc)&1)===1;
+      sq.querySelectorAll('.coord').forEach(c=>{
+        c.classList.toggle('onDark',isDark);
+        c.classList.toggle('onLight',!isDark);
+      });
+    });
+    requestAnimationFrame(()=>{
+      cells.forEach(sq=>sq.querySelectorAll('.coord').forEach(c=>{
+        const r=c.getBoundingClientRect();
+        c.style.transform=`translate(${Math.round(r.left)-r.left}px,${Math.round(r.top)-r.top}px)`;
+      }));
+    });
+  }
+
+  const board=document.getElementById('board');
+  if(board){
+    const observer=new MutationObserver(()=>requestAnimationFrame(()=>{syncWebCoordinateContrast();applyWebMatePulse();}));
+    observer.observe(board,{childList:true});
+    syncWebCoordinateContrast();
+  }
+
+  function updateNavButtons(){
+    const prev=document.getElementById('prev'),next=document.getElementById('next');
+    const hasPositions=Array.isArray(S?.positions)&&S.positions.length>0;
+    if(prev)prev.disabled=!hasPositions||S.step<=0;
+    if(next)next.disabled=!hasPositions||S.step>=S.positions.length-1;
+  }
+
+  const resultBoard=document.getElementById('board');
+  if(resultBoard){
+    const navObserver=new MutationObserver(()=>requestAnimationFrame(updateNavButtons));
+    navObserver.observe(resultBoard,{childList:true,subtree:false});
+  }
+  document.getElementById('prev')?.addEventListener('click',()=>setTimeout(updateNavButtons,0));
+  document.getElementById('next')?.addEventListener('click',()=>setTimeout(updateNavButtons,0));
+  document.getElementById('play')?.addEventListener('click',()=>setTimeout(updateNavButtons,0));
+  updateNavButtons();
+
+  const download=document.getElementById('download'),share=document.getElementById('share');
+  if(download)download.onclick=downloadPro;
+  if(share)share.onclick=sharePro;
+
+  const result=document.getElementById('result');
+  if(result){
+    const observer=new MutationObserver(()=>{if(result.classList.contains('active'))preloadPieces().catch(()=>{});});
+    observer.observe(result,{attributes:true,attributeFilter:['class']});
+  }
+})();
+
+/* ===== solve6/replay-web.js ===== */
+/* MateShot replay v4: smooth in-browser piece motion + matching highlights. */
+(() => {
+  const lang=(navigator.language||'en').toLowerCase().startsWith('es')?'es':'en';
+  const LABELS=lang==='es'?{play:'Ver solución',pause:'Pausa'}:{play:'Play solution',pause:'Pause'};
+  const PIECE_BASE='https://lichess1.org/assets/piece/cburnett/';
+  const pieceCode=p=>(p===p.toUpperCase()?'w':'b')+p.toUpperCase();
+  const pieceSrc=p=>PIECE_BASE+pieceCode(p)+'.svg';
+
+  const style=document.createElement('style');
+  style.textContent=`
+    #board{position:relative;}
+    .webMoveOverlay{position:absolute;z-index:8;pointer-events:none;will-change:transform;object-fit:contain;filter:drop-shadow(0 1px 1px rgba(0,0,0,.16));}
+    .solutionRow.active{background:rgba(214,255,88,.11);border-color:rgba(214,255,88,.28);}
+    .solutionRow.active .n{color:#d6ff58;}
+  `;
+  document.head.appendChild(style);
+
+  let animToken=0;
+  let animState=null;
+
+  function ease(p){return p<.5?4*p*p*p:1-Math.pow(-2*p+2,3)/2;}
+  function visualIndex(index){return S.orientation==='black'?63-index:index;}
+  function cellFor(index){return document.getElementById('board')?.children?.[visualIndex(index)]||null;}
+
+  function activeRowForMove(i){
+    if(i<0)return -1;
+    return S.start?.side==='b' ? (i===0?0:Math.floor((i+1)/2)) : Math.floor(i/2);
+  }
+  function markActiveMove(i){
+    const rows=[...document.querySelectorAll('#solutionList .solutionRow')];
+    const row=activeRowForMove(i);
+    rows.forEach((el,n)=>el.classList.toggle('active',n===row));
+  }
+
+  function playLabel(){const b=document.getElementById('play');if(b)b.innerHTML='▶ <span>'+LABELS.play+'</span>';}
+  function pauseLabel(){const b=document.getElementById('play');if(b)b.innerHTML='❚❚ <span>'+LABELS.pause+'</span>';}
+
+  function settleAnimation(){
+    if(!animState)return;
+    const a=animState;
+    S.step=a.progress>=.5?a.toStep:a.fromStep;
+    const last=S.step?S.line[S.step-1]:null;
+    renderBoard(S.positions[S.step].b,S.orientation,last);
+    markActiveMove(S.step-1);
+    animState=null;
+  }
+
+  window.stopPlay = stopPlay = function(){
+    S.playing=false;
+    clearTimeout(S.timer);S.timer=null;
+    animToken++;
+    settleAnimation();
+    playLabel();
+  };
+
+  window.gotoStep = gotoStep = function(n){
+    animToken++;
+    animState=null;
+    S.step=Math.max(0,Math.min(S.positions.length-1,n));
+    const last=S.step?S.line[S.step-1]:null;
+    renderBoard(S.positions[S.step].b,S.orientation,last);
+    markActiveMove(S.step-1);
+  };
+
+  async function animateForward(fromStep){
+    if(fromStep>=S.positions.length-1)return false;
+    const token=++animToken;
+    const mv=S.line[fromStep],before=S.positions[fromStep],after=S.positions[fromStep+1];
+
+    renderBoard(before.b,S.orientation,mv);
+    markActiveMove(fromStep);
+    await new Promise(requestAnimationFrame);
+
+    const root=document.getElementById('board'),src=cellFor(mv.from),dst=cellFor(mv.to);
+    if(!root||!src||!dst){S.step=fromStep+1;renderBoard(after.b,S.orientation,mv);return true;}
+    const srcImg=src.querySelector('.pieceImg'),dstImg=dst.querySelector('.pieceImg');
+    const moving=before.b[mv.from];
+    if(!moving){S.step=fromStep+1;renderBoard(after.b,S.orientation,mv);return true;}
+
+    const rr=root.getBoundingClientRect(),sr=src.getBoundingClientRect(),dr=dst.getBoundingClientRect();
+    if(srcImg)srcImg.style.visibility='hidden';
+    const overlay=document.createElement('img');
+    overlay.className='webMoveOverlay';overlay.src=pieceSrc(moving);overlay.draggable=false;
+    const pad=sr.width*.06;
+    overlay.style.left=(sr.left-rr.left+pad)+'px';overlay.style.top=(sr.top-rr.top+pad)+'px';
+    overlay.style.width=(sr.width-pad*2)+'px';overlay.style.height=(sr.height-pad*2)+'px';
+    root.appendChild(overlay);
+
+    const dx=dr.left-sr.left,dy=dr.top-sr.top,duration=430,start=performance.now();
+    animState={fromStep,toStep:fromStep+1,progress:0};
+
+    await new Promise(resolve=>{
+      function frame(now){
+        if(token!==animToken){overlay.remove();resolve();return;}
+        const p=Math.max(0,Math.min(1,(now-start)/duration));
+        animState.progress=p;
+        const e=ease(p);
+        overlay.style.transform=`translate3d(${dx*e}px,${dy*e}px,0)`;
+        if(dstImg)dstImg.style.visibility=p<.82?'visible':'hidden';
+        if(p<1)requestAnimationFrame(frame);else{overlay.remove();resolve();}
+      }
+      requestAnimationFrame(frame);
+    });
+
+    if(token!==animToken)return false;
+    animState=null;
+    S.step=fromStep+1;
+    renderBoard(after.b,S.orientation,mv);
+    markActiveMove(fromStep);
+    return true;
+  }
+
+  window.playLoop = playLoop = async function(){
+    if(!S.playing)return;
+    if(S.step>=S.positions.length-1){stopPlay();return;}
+    const ok=await animateForward(S.step);
+    if(!ok||!S.playing)return;
+    S.timer=setTimeout(playLoop,120);
+  };
+
+  window.togglePlay = togglePlay = function(){
+    if(S.playing){stopPlay();return;}
+    if(S.step>=S.positions.length-1)gotoStep(0);
+    S.playing=true;pauseLabel();
+    S.timer=setTimeout(playLoop,100);
+  };
+
+  const play=document.getElementById('play');if(play)play.onclick=togglePlay;
+  const prev=document.getElementById('prev'),next=document.getElementById('next');
+  if(prev)prev.onclick=()=>{stopPlay();gotoStep(S.step-1);};
+  if(next)next.onclick=async()=>{stopPlay();if(S.step<S.positions.length-1)await animateForward(S.step);};
+
+  markActiveMove((S?.step||0)-1);
+})();
+
+/* MateShot v9 bridge: expose state to the polish layer and keep a compact puzzle statement over the moves. */
+(() => {
+  try{ if(typeof S!=='undefined') window.S=S; }catch(_){ }
+
+  const isEs=(navigator.language||'en').toLowerCase().startsWith('es');
+  const sideText=()=>{
+    try{
+      const st=(typeof S!=='undefined'&&S)?S:window.S;
+      if(!st?.start)return '';
+      const side=st.start.side==='b'?(isEs?'Mueven negras':'Black to move'):(isEs?'Mueven blancas':'White to move');
+      return `${side} · ${isEs?'Mate en':'Mate in'} ${st.mateN}`;
+    }catch(_){ return ''; }
+  };
+
+  function applyStatement(){
+    try{ if(typeof S!=='undefined') window.S=S; }catch(_){ }
+    const context=document.querySelector('.contextBar');
+    if(context) context.style.setProperty('display','none','important');
+    const k=document.querySelector('.solutionKicker');
+    const txt=sideText();
+    if(k&&txt){
+      k.textContent=txt;
+      k.style.setProperty('display','block','important');
+    }
+  }
+
+  const style=document.createElement('style');
+  style.textContent=`
+    .solutionKicker::before{display:none!important;content:none!important;}
+    .solutionKicker{color:#9aa1aa!important;font-weight:720!important;letter-spacing:-.025em!important;text-transform:none!important;}
+    @media(max-width:760px){.solutionKicker{font-size:20px!important;line-height:1.14!important;white-space:nowrap!important;}}
+    @media(max-width:390px){.solutionKicker{font-size:18.5px!important;}}
+    @media(min-width:761px){.solutionKicker{font-size:22px!important;line-height:1.14!important;white-space:nowrap!important;}}
+  `;
+  document.head.appendChild(style);
+
+  setTimeout(()=>{
+    applyStatement();
+    const result=document.getElementById('result');
+    if(result)new MutationObserver(()=>{if(result.classList.contains('active'))setTimeout(applyStatement,0);}).observe(result,{attributes:true,attributeFilter:['class']});
+    const list=document.getElementById('solutionList');
+    if(list)new MutationObserver(()=>setTimeout(applyStatement,0)).observe(list,{childList:true});
+  },0);
+})();
+
+setTimeout(()=>{
+  if(document.querySelector('script[data-mateshot-polish-v9]'))return;
+  const s=document.createElement('script');
+  s.src='polish-v9.js?v=1';
+  s.dataset.mateshotPolishV9='1';
+  document.head.appendChild(s);
+},0);
+
+
+/* ===== solve6/polish-v10.js ===== */
+/* MateShot polish v10: smaller muted prompt in app, balanced mobile columns, larger video text, smaller video board. */
+(() => {
+  const LANG=(navigator.language||'en').toLowerCase().startsWith('es')?'es':'en';
+  const TXT=LANG==='es'?{
+    video:'Vídeo',pause:'Pausa',share:'Compartir',
+    black:'Mueven negras',white:'Mueven blancas',mate:'Mate en',checkmate:'Jaque mate',
+    generating:'Generating…',ready:'Vídeo listo. Toca Compartir.',
+    unavailable:'Tu navegador no permite compartir este vídeo directamente.',downloaded:'No se puede compartir aquí. Vídeo descargado.',error:'No se ha podido preparar el vídeo.'
+  }:{
+    video:'Video',pause:'Pause',share:'Share',
+    black:'Black to move',white:'White to move',mate:'Mate in',checkmate:'Checkmate',
+    generating:'Generating…',ready:'Video ready. Tap Share.',
+    unavailable:'This browser cannot share the video directly.',downloaded:'Sharing is unavailable here. Video downloaded.',error:'Could not prepare the video.'
+  };
+
+  const style=document.createElement('style');
+  style.textContent=`
+    button:disabled{cursor:default!important;}
+    .brand{gap:10px!important;letter-spacing:-.04em!important;font-size:25px!important;font-weight:850!important;}
+    .brandMark{width:11px!important;height:11px!important;min-width:11px!important;border-radius:50%!important;background:var(--accent)!important;color:transparent!important;font-size:0!important;box-shadow:0 0 0 5px rgba(214,255,88,.045)!important;}
+    .top{height:64px!important;}
+
+    #sidePill,#goalPill,.contextBar{display:none!important;}
+    .mate{display:none!important;}
+    #prev,#next,.speed,#download{display:none!important;}
+
+    .solutionKicker{display:block!important;text-transform:none!important;letter-spacing:-.025em!important;color:#8c949d!important;font-weight:760!important;white-space:nowrap!important;margin:0!important;}
+    .solutionKicker::before{display:none!important;content:none!important;}
+
+    .solutionList{display:flex!important;flex-direction:column!important;gap:8px!important;overflow-y:auto!important;overscroll-behavior:contain;scrollbar-width:none;padding-right:3px;position:relative;}
+    .solutionList::-webkit-scrollbar{display:none;}
+    .solutionList.fadeBottom{-webkit-mask-image:linear-gradient(to bottom,#000 0%,#000 76%,transparent 100%);mask-image:linear-gradient(to bottom,#000 0%,#000 76%,transparent 100%);}
+    .solutionRow{flex:0 0 auto;}
+
+    .controls{display:block!important;width:100%!important;}
+    .controls .play{width:100%!important;}
+    .actions{display:block!important;width:100%!important;}
+    #share{width:100%!important;position:relative;}
+    #share.shareBusy{opacity:.84!important;}
+    #share .shareSpinner{width:18px;height:18px;border-radius:50%;border:2px solid rgba(17,17,17,.22);border-top-color:#111;animation:msSpin .75s linear infinite;display:inline-block;}
+    @keyframes msSpin{to{transform:rotate(360deg)}}
+    .exportNote{min-height:0!important;}
+
+    @media(max-width:760px){
+      .top{height:60px!important;}
+      .brand{font-size:24px!important;}
+      .brandMark{width:10px!important;height:10px!important;min-width:10px!important;}
+      .resultView{align-items:flex-start!important;overflow:hidden!important;padding:0 8px 10px!important;}
+      .resultGrid{gap:12px!important;padding-bottom:0!important;width:100%!important;justify-items:center!important;}
+      .boardWrap{order:2!important;width:min(96vw,50dvh,590px)!important;}
+      .solutionPanel{order:3!important;width:min(96vw,50dvh,590px)!important;display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;grid-template-areas:"title title" "moves controls" "moves actions" "note note"!important;column-gap:12px!important;row-gap:12px!important;align-items:start!important;padding:0!important;}
+      .solutionKicker{grid-area:title!important;font-size:15px!important;line-height:1.15!important;}
+      .solutionList{grid-area:moves!important;max-height:214px!important;align-self:start!important;gap:8px!important;}
+      .solutionRow{padding:11px 11px!important;font-size:14.5px!important;border-radius:12px!important;gap:10px!important;}
+      .solutionRow strong{font-size:17px!important;line-height:1.15!important;}
+      .solutionRow .n{width:31px!important;font-size:14px!important;}
+      .controls{grid-area:controls!important;align-self:start!important;}
+      .controls .play{height:64px!important;border-radius:19px!important;font-size:17px!important;padding:0 12px!important;}
+      .actions{grid-area:actions!important;align-self:start!important;}
+      .action{height:64px!important;border-radius:19px!important;font-size:17px!important;padding:0 10px!important;}
+      .action svg{width:22px!important;height:22px!important;}
+      .exportNote{grid-area:note!important;}
+    }
+
+    @media(max-width:390px){
+      .boardWrap,.solutionPanel{width:min(95vw,47dvh,570px)!important;}
+      .solutionList{max-height:202px!important;}
+      .solutionRow{padding:9px 9px!important;}
+      .solutionRow strong{font-size:15.5px!important;}
+      .controls .play,.action{height:60px!important;font-size:15.5px!important;}
+      .solutionKicker{font-size:14px!important;}
+    }
+
+    @media(min-width:761px){
+      .brand{font-size:26px!important;}
+      .solutionPanel{display:flex!important;flex-direction:column!important;gap:15px!important;}
+      .solutionKicker{font-size:16px!important;line-height:1.15!important;margin-bottom:0!important;}
+      .solutionList{width:78%!important;max-height:292px!important;}
+      .solutionRow{padding:11px 12px!important;}
+      .solutionRow strong{font-size:16.5px!important;}
+      .controls,.actions{width:100%!important;}
+      .controls .play,.action{height:56px!important;font-size:16px!important;}
+    }
+  `;
+  document.head.appendChild(style);
+
+  const PIECE_BASE='https://lichess1.org/assets/piece/cburnett/';
+  const pieceCode=p=>(p===p.toUpperCase()?'w':'b')+p.toUpperCase();
+  const pieceSrc=p=>PIECE_BASE+pieceCode(p)+'.svg';
+  const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+
+  function toast(msg){const el=document.getElementById('toast');if(!el)return;el.textContent=msg;el.classList.add('show');clearTimeout(toast._t);toast._t=setTimeout(()=>el.classList.remove('show'),2200);}
+  function state(){try{return (typeof S!=='undefined'&&S)?S:window.S;}catch(_){return window.S;}}
+  function contextText(){const st=state();if(!st?.start)return'';const side=st.start.side==='b'?TXT.black:TXT.white;return `${side} · ${TXT.mate} ${st.mateN}`;}
+  function shareIcon(){return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.8" y="6.4" width="12.8" height="11.2" rx="2.4"/><path d="M8.2 9.4l4 2.6-4 2.6z" fill="currentColor" stroke="none"/><path d="M15.3 4.8H21v5.7"/><path d="M21 4.8l-6.5 6.5"/></svg>`;}
+  function decorateShareButton(){const b=document.getElementById('share');if(!b||b.classList.contains('shareBusy'))return;b.innerHTML=`${shareIcon()}<span>${TXT.share}</span>`;}
+  function setShareBusy(on){const b=document.getElementById('share');if(!b)return;b.classList.toggle('shareBusy',on);b.disabled=on;b.innerHTML=on?`<span class="shareSpinner"></span><span>${TXT.generating}</span>`:`${shareIcon()}<span>${TXT.share}</span>`;}
+  function setVideoLabel(){const b=document.getElementById('play');if(!b)return;const st=state();const desired=st?.playing?TXT.pause:TXT.video;if(b.querySelector('span')?.textContent===desired)return;b.innerHTML=st?.playing?`❚❚ <span>${TXT.pause}</span>`:`▶ <span>${TXT.video}</span>`;}
+  function updateFade(){const list=document.getElementById('solutionList');if(!list)return;const more=list.scrollTop+list.clientHeight<list.scrollHeight-3;list.classList.toggle('fadeBottom',more);}
+  function polishResult(){if(!state()?.start)return;const k=document.querySelector('.solutionKicker');if(k)k.textContent=contextText();const m=document.getElementById('mate');if(m)m.style.display='none';setVideoLabel();decorateShareButton();requestAnimationFrame(updateFade);}
+
+  const list=document.getElementById('solutionList');
+  if(list){list.addEventListener('scroll',updateFade,{passive:true});new MutationObserver(()=>{polishResult();updateFade();scheduleWarmVideo();}).observe(list,{childList:true});}
+  const result=document.getElementById('result');
+  if(result)new MutationObserver(()=>{if(result.classList.contains('active')){setTimeout(()=>{polishResult();scheduleWarmVideo();},0);}}).observe(result,{attributes:true,attributeFilter:['class']});
+  if(window.togglePlay){const baseToggle=window.togglePlay;window.togglePlay=function(){const r=baseToggle.apply(this,arguments);requestAnimationFrame(setVideoLabel);return r;};}
+  if(window.stopPlay){const baseStop=window.stopPlay;window.stopPlay=function(){const r=baseStop.apply(this,arguments);requestAnimationFrame(setVideoLabel);return r;};}
+  const playBtn=document.getElementById('play');if(playBtn)playBtn.onclick=()=>window.togglePlay();
+
+  function preloadPieces(){if(preloadPieces.cache)return preloadPieces.cache;const chars=['K','Q','R','B','N','P','k','q','r','b','n','p'];preloadPieces.cache=Promise.all(chars.map(p=>new Promise((resolve,reject)=>{const im=new Image();im.crossOrigin='anonymous';im.onload=()=>resolve([p,im]);im.onerror=reject;im.src=pieceSrc(p);}))).then(entries=>Object.fromEntries(entries));return preloadPieces.cache;}
+  function roundRectPath(ctx,x,y,w,h,r){r=Math.min(r,w/2,h/2);ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();}
+  function canvasSquare(index,orientation,bx,by,cell){let r=(index/8)|0,c=index%8;if(orientation==='black'){r=7-r;c=7-c;}return{x:bx+c*cell,y:by+r*cell};}
+  function ease(p){return p<.5?2*p*p:1-Math.pow(-2*p+2,2)/2;}
+  function matedKingIndex(position){if(!position?.b)return-1;const k=position.side==='w'?'K':'k';return position.b.indexOf(k);}
+  function moveLabel(index){const st=state();if(!st?.line?.[index])return'';const mv=st.line[index],black=st.start.side==='b';if(black){if(index===0)return'1… '+mv.san;const n=Math.floor((index+1)/2)+1;return index%2===1?n+'. '+mv.san:n+'… '+mv.san;}const n=Math.floor(index/2)+1;return index%2===0?n+'. '+mv.san:n+'… '+mv.san;}
+  function solutionText(){const st=state(),rows=[];if(st.start.side==='b'){rows.push('1… '+st.line[0].san);let n=2;for(let i=1;i<st.line.length;i+=2,n++)rows.push(n+'. '+st.line[i].san+(st.line[i+1]?' '+st.line[i+1].san:''));}else{let n=1;for(let i=0;i<st.line.length;i+=2,n++)rows.push(n+'. '+st.line[i].san+(st.line[i+1]?' '+st.line[i+1].san:''));}return `${contextText()}\n${rows.join('\n')}`;}
+
+  function drawLogo(ctx,W){ctx.save();ctx.font='850 33px -apple-system,BlinkMacSystemFont,Arial';const word='MateShot',tw=ctx.measureText(word).width,gap=11,d=10,total=d+gap+tw,start=(W-total)/2;ctx.fillStyle='#d6ff58';ctx.beginPath();ctx.arc(start+d/2,35,d/2,0,Math.PI*2);ctx.fill();ctx.fillStyle='#f5f6f2';ctx.textAlign='left';ctx.textBaseline='alphabetic';ctx.fillText(word,start+d+gap,46);ctx.restore();}
+
+  function drawFrame(ctx,images,position,orientation,opts={}){
+    const W=720,H=720,board=524,bx=(W-board)/2,by=96,cell=board/8,radius=15;
+    const motion=opts.motionMove||null,highlight=opts.highlightMove||motion,p=opts.progress??1;
+    const label=opts.label||'',mateKing=Number.isInteger(opts.mateKing)?opts.mateKing:-1,mateIntensity=Math.max(0,Math.min(1,opts.mateIntensity||0));
+    ctx.fillStyle='#090b0d';ctx.fillRect(0,0,W,H);drawLogo(ctx,W);
+    ctx.save();roundRectPath(ctx,bx,by,board,board,radius);ctx.clip();
+    for(let vr=0;vr<8;vr++)for(let vc=0;vc<8;vc++){ctx.fillStyle=((vr+vc)&1)?'#b98c68':'#f0d9b5';ctx.fillRect(bx+vc*cell,by+vr*cell,cell,cell);}
+    if(highlight){const a=canvasSquare(highlight.from,orientation,bx,by,cell),z=canvasSquare(highlight.to,orientation,bx,by,cell);ctx.fillStyle='rgba(214,255,88,.24)';ctx.fillRect(a.x,a.y,cell,cell);ctx.fillStyle='rgba(214,255,88,.43)';ctx.fillRect(z.x,z.y,cell,cell);}
+    if(mateKing>=0){const k=canvasSquare(mateKing,orientation,bx,by,cell);ctx.save();ctx.shadowColor=`rgba(255,72,72,${.20+.46*mateIntensity})`;ctx.shadowBlur=8+22*mateIntensity;ctx.fillStyle=`rgba(255,62,62,${.16+.34*mateIntensity})`;ctx.fillRect(k.x,k.y,cell,cell);ctx.strokeStyle=`rgba(255,105,105,${.45+.45*mateIntensity})`;ctx.lineWidth=2+2*mateIntensity;ctx.strokeRect(k.x+2,k.y+2,cell-4,cell-4);ctx.restore();}
+    const b=position.b,moving=motion?b[motion.from]:null;
+    for(let i=0;i<64;i++){const pc=b[i];if(!pc)continue;if(motion&&(i===motion.from||i===motion.to))continue;const q=canvasSquare(i,orientation,bx,by,cell);ctx.drawImage(images[pc],q.x+cell*.055,q.y+cell*.055,cell*.89,cell*.89);}
+    if(motion){const captured=b[motion.to];if(captured&&p<.82){const q=canvasSquare(motion.to,orientation,bx,by,cell);ctx.drawImage(images[captured],q.x+cell*.055,q.y+cell*.055,cell*.89,cell*.89);}const a=canvasSquare(motion.from,orientation,bx,by,cell),z=canvasSquare(motion.to,orientation,bx,by,cell),e=ease(Math.max(0,Math.min(1,p))),x=a.x+(z.x-a.x)*e,y=a.y+(z.y-a.y)*e;if(moving)ctx.drawImage(images[moving],x+cell*.055,y+cell*.055,cell*.89,cell*.89);}
+    const files=orientation==='black'?'hgfedcba':'abcdefgh',ranks=orientation==='black'?'12345678':'87654321';ctx.font='760 10px -apple-system,BlinkMacSystemFont,Arial';ctx.textBaseline='top';ctx.textAlign='left';for(let vr=0;vr<8;vr++){const dark=(vr&1)===1;ctx.fillStyle=dark?'rgba(247,245,238,.76)':'rgba(92,70,52,.66)';ctx.fillText(ranks[vr],bx+7,by+vr*cell+6);}ctx.textBaseline='alphabetic';ctx.textAlign='right';for(let vc=0;vc<8;vc++){const dark=((7+vc)&1)===1;ctx.fillStyle=dark?'rgba(247,245,238,.76)':'rgba(92,70,52,.66)';ctx.fillText(files[vc],bx+(vc+1)*cell-7,by+board-6);}ctx.restore();
+    ctx.save();roundRectPath(ctx,bx,by,board,board,radius);ctx.strokeStyle='rgba(255,255,255,.09)';ctx.lineWidth=1.25;ctx.stroke();ctx.restore();
+    ctx.textBaseline='alphabetic';ctx.fillStyle='#c7cdd4';ctx.textAlign='left';ctx.font='760 29px -apple-system,BlinkMacSystemFont,Arial';ctx.fillText(contextText(),bx,676,420);ctx.textAlign='right';ctx.fillStyle=mateKing>=0?'#ff8585':'#f1f3ee';ctx.font=mateKing>=0?'820 31px -apple-system,BlinkMacSystemFont,Arial':'800 29px -apple-system,BlinkMacSystemFont,Arial';ctx.fillText(mateKing>=0?TXT.checkmate:label,bx+board,676,220);ctx.textAlign='left';
+  }
+
+  let buildPromise=null;
+  function videoKey(){const st=state();return st?.line?`v10|${st.orientation}|${st.start.side}|${st.mateN}|${st.line.map(x=>x.san).join('|')}`:'';}
+  async function buildVideo(){
+    const st=state();if(!st?.positions?.length||!st?.line?.length)throw new Error(TXT.error);const key=videoKey();if(st.v10VideoBlob&&st.v10VideoKey===key)return{blob:st.v10VideoBlob,mime:st.v10VideoMime};if(buildPromise)return buildPromise;
+    buildPromise=(async()=>{const canvas=document.createElement('canvas');canvas.width=720;canvas.height=720;const ctx=canvas.getContext('2d',{alpha:false});if(!canvas.captureStream||!window.MediaRecorder)throw new Error(TXT.error);const images=await preloadPieces();const candidates=['video/mp4;codecs=avc1.42E01E','video/mp4','video/webm;codecs=vp9','video/webm;codecs=vp8','video/webm'];const mime=candidates.find(x=>MediaRecorder.isTypeSupported?.(x))||'',fps=24;const stream=canvas.captureStream(fps),chunks=[],opts={videoBitsPerSecond:2100000};if(mime)opts.mimeType=mime;const rec=new MediaRecorder(stream,opts);rec.ondataavailable=e=>{if(e.data&&e.data.size)chunks.push(e.data);};const stopped=new Promise((resolve,reject)=>{rec.onstop=resolve;rec.onerror=e=>reject(e.error||e);});rec.start(200);
+      drawFrame(ctx,images,st.positions[0],st.orientation,{label:''});await sleep(250);const moveMs=400,holdMs=85;
+      for(let i=0;i<st.line.length;i++){const frames=Math.max(7,Math.round(moveMs/1000*fps)),before=st.positions[i],after=st.positions[i+1],mv=st.line[i],label=moveLabel(i);for(let f=0;f<frames;f++){const p=frames===1?1:f/(frames-1);drawFrame(ctx,images,before,st.orientation,{motionMove:mv,highlightMove:mv,progress:p,label});await sleep(1000/fps);}drawFrame(ctx,images,after,st.orientation,{highlightMove:mv,label});await sleep(holdMs);}
+      const finalPos=st.positions[st.positions.length-1],lastMove=st.line[st.line.length-1],king=matedKingIndex(finalPos);const pulseMs=210,gapMs=80,pulseFrames=Math.max(5,Math.round(pulseMs/1000*fps));for(let pulse=0;pulse<2;pulse++){for(let f=0;f<pulseFrames;f++){const q=pulseFrames===1?1:f/(pulseFrames-1),intensity=Math.sin(Math.PI*q);drawFrame(ctx,images,finalPos,st.orientation,{highlightMove:lastMove,mateKing:king,mateIntensity:intensity,label:TXT.checkmate});await sleep(1000/fps);}if(pulse===0)await sleep(gapMs);}drawFrame(ctx,images,finalPos,st.orientation,{highlightMove:lastMove,mateKing:king,mateIntensity:.2,label:TXT.checkmate});await sleep(650);rec.stop();await stopped;stream.getTracks().forEach(x=>x.stop());const actual=mime||rec.mimeType||'video/webm',blob=new Blob(chunks,{type:actual});st.v10VideoKey=key;st.v10VideoBlob=blob;st.v10VideoMime=actual;return{blob,mime:actual};})().finally(()=>{buildPromise=null;});return buildPromise;
+  }
+
+  let warmTimer=null;function scheduleWarmVideo(){clearTimeout(warmTimer);warmTimer=setTimeout(()=>{const st=state();if(document.getElementById('result')?.classList.contains('active')&&st?.positions?.length&&st?.line?.length){buildVideo().catch(()=>{});}},180);}
+  function downloadFallback(blob,mime){try{const ext=(mime||blob.type||'video/mp4').includes('mp4')?'mp4':'webm';const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=`mateshot-mate-${state()?.mateN||'puzzle'}.${ext}`;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),5000);toast(TXT.downloaded);}catch(_){toast(TXT.unavailable);}}
+  async function shareNow(){const share=document.getElementById('share');if(!share)return;try{const st=state();let ready=st.v10VideoBlob&&st.v10VideoKey===videoKey();if(!ready){setShareBusy(true);await buildVideo();setShareBusy(false);}const blob=st.v10VideoBlob,mime=st.v10VideoMime||blob.type||'video/mp4';const ext=mime.includes('mp4')?'mp4':'webm';const file=new File([blob],`mateshot-mate-${st.mateN}.${ext}`,{type:mime});if(!navigator.share||(navigator.canShare&&!navigator.canShare({files:[file]}))){downloadFallback(blob,mime);return;}if(navigator.userActivation&&!navigator.userActivation.isActive){toast(TXT.ready);return;}await navigator.share({files:[file],title:'MateShot',text:solutionText()});}catch(e){setShareBusy(false);if(e?.name==='AbortError')return;const st=state(),blob=st?.v10VideoBlob,mime=st?.v10VideoMime||blob?.type||'video/mp4';if(blob)downloadFallback(blob,mime);else toast(TXT.unavailable);}finally{setShareBusy(false);}}
+
+  const share=document.getElementById('share');if(share)share.onclick=shareNow;
+  if(playBtn)new MutationObserver(()=>{if(!playBtn.classList.contains('shareBusy'))requestAnimationFrame(setVideoLabel);}).observe(playBtn,{childList:true,subtree:true,characterData:true});
+  setTimeout(()=>{polishResult();scheduleWarmVideo();},0);
+})();
+
+/* ===== solve6/polish-v11.js ===== */
+/* MateShot polish v11 overlay: balanced mobile columns + safer video captions. */
+(() => {
+  const css=document.createElement('style');
+  css.textContent=`
+    .solutionKicker{color:#929aa3!important;font-weight:760!important;letter-spacing:-.022em!important;white-space:nowrap!important;}
+    .solutionKicker::before{display:none!important;content:none!important;}
+    .buttonStack{display:flex;flex-direction:column;justify-content:center;gap:8px;width:100%;height:100%;}
+    @media(max-width:760px){
+      .boardWrap{width:min(96vw,50dvh,590px)!important;}
+      .solutionPanel{width:min(96vw,50dvh,590px)!important;display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;grid-template-areas:"title title" "moves buttons" "note note"!important;column-gap:12px!important;row-gap:11px!important;align-items:start!important;padding:0!important;}
+      .solutionKicker{grid-area:title!important;font-size:17px!important;line-height:1.15!important;text-align:center!important;margin:0!important;}
+      .solutionList{grid-area:moves!important;max-height:var(--ms-list-max,260px)!important;align-self:center!important;gap:8px!important;}
+      .solutionRow{background:rgba(255,255,255,.055)!important;border-color:rgba(255,255,255,.085)!important;}
+      .buttonStack{grid-area:buttons!important;align-self:stretch!important;justify-content:center!important;gap:8px!important;}
+      .controls,.actions{width:100%!important;}
+      .exportNote{grid-area:note!important;}
+    }
+    @media(max-width:390px){
+      .boardWrap,.solutionPanel{width:min(95vw,47dvh,570px)!important;}
+      .solutionKicker{font-size:16px!important;}
+      .solutionList{max-height:var(--ms-list-max,224px)!important;}
+    }
+    @media(min-width:761px){
+      .solutionKicker{font-size:18px!important;line-height:1.15!important;margin-bottom:0!important;}
+      .buttonStack{width:100%!important;height:auto!important;gap:10px!important;}
+    }
+  `;
+  document.head.appendChild(css);
+
+  function ensureStack(){
+    const panel=document.querySelector('.solutionPanel'),controls=document.querySelector('.controls'),actions=document.querySelector('.actions');
+    if(!panel||!controls||!actions)return;
+    let stack=panel.querySelector('.buttonStack');
+    if(!stack){stack=document.createElement('div');stack.className='buttonStack';panel.insertBefore(stack,document.getElementById('exportNote'));}
+    if(controls.parentNode!==stack)stack.appendChild(controls);
+    if(actions.parentNode!==stack)stack.appendChild(actions);
+  }
+  function sizeColumns(){
+    const panel=document.querySelector('.solutionPanel');if(!panel)return;
+    if(window.innerWidth>760){panel.style.removeProperty('--ms-list-max');return;}
+    const vv=window.visualViewport, bottom=vv?vv.height+vv.offsetTop:window.innerHeight;
+    const top=panel.getBoundingClientRect().top,title=document.querySelector('.solutionKicker');
+    const available=Math.floor(bottom-top-(title?.getBoundingClientRect().height||20)-42);
+    panel.style.setProperty('--ms-list-max',Math.max(150,Math.min(278,available))+'px');
+  }
+  function apply(){ensureStack();requestAnimationFrame(sizeColumns);}
+  const result=document.getElementById('result');
+  if(result)new MutationObserver(()=>{if(result.classList.contains('active'))setTimeout(apply,0);}).observe(result,{attributes:true,attributeFilter:['class']});
+  const list=document.getElementById('solutionList');
+  if(list)new MutationObserver(()=>setTimeout(apply,0)).observe(list,{childList:true});
+  window.addEventListener('resize',()=>requestAnimationFrame(sizeColumns),{passive:true});
+  if(window.visualViewport)window.visualViewport.addEventListener('resize',()=>requestAnimationFrame(sizeColumns),{passive:true});
+  setTimeout(apply,0);
+
+  // v10 draws the social-video prompt/move on y=676. Fit those two captions so long text never collides.
+  const proto=window.CanvasRenderingContext2D&&CanvasRenderingContext2D.prototype;
+  if(proto&&!proto.__mateShotV11){
+    proto.__mateShotV11=true;
+    const nativeFillText=proto.fillText;
+    proto.fillText=function(text,x,y,maxWidth){
+      if(this.canvas?.width===720&&this.canvas?.height===720&&y>=672&&y<=680){
+        const oldFont=this.font;
+        const right=this.textAlign==='right'||x>360;
+        const base=right?23:24,min=right?17:19,limit=right?155:345;
+        let size=base;
+        while(size>min){this.font=oldFont.replace(/\d+(?:\.\d+)?px/,size+'px');if(this.measureText(String(text)).width<=limit)break;size--;}
+        const r=nativeFillText.call(this,text,x,y,Math.min(maxWidth||Infinity,limit));
+        this.font=oldFont;
+        return r;
+      }
+      return nativeFillText.call(this,text,x,y,maxWidth);
+    };
+  }
+})();
+
+
+/* ===== solve6/polish-v12.js ===== */
+/* MateShot polish v12: slightly larger mobile prompt, tighter move type, clearer active borders. */
+(() => {
+  const css=document.createElement('style');
+  css.textContent=`
+    .solutionRow.active{
+      border-color:rgba(214,255,88,.46)!important;
+      box-shadow:inset 0 0 0 1px rgba(214,255,88,.10)!important;
+    }
+    @media(max-width:760px){
+      .solutionKicker{
+        font-size:19px!important;
+        line-height:1.14!important;
+        color:#929aa3!important;
+        font-weight:770!important;
+      }
+      .solutionRow{
+        padding:9px 10px!important;
+        font-size:13.5px!important;
+        background:rgba(255,255,255,.060)!important;
+        border-color:rgba(255,255,255,.105)!important;
+      }
+      .solutionRow strong{
+        font-size:15.5px!important;
+        line-height:1.15!important;
+      }
+      .solutionRow .n{
+        font-size:13px!important;
+        width:29px!important;
+      }
+      .solutionRow.active{
+        background:rgba(214,255,88,.105)!important;
+        border-color:rgba(214,255,88,.54)!important;
+        box-shadow:inset 0 0 0 1px rgba(214,255,88,.13)!important;
+      }
+    }
+    @media(max-width:390px){
+      .solutionKicker{font-size:18px!important;}
+      .solutionRow{padding:8px 9px!important;}
+      .solutionRow strong{font-size:14.5px!important;}
+      .solutionRow .n{font-size:12.5px!important;width:27px!important;}
+    }
+  `;
+  document.head.appendChild(css);
+})();
+
+/* v13 mobile lower-area balance: use the free space between board and copyright. */
+(() => {
+  const css=document.createElement('style');
+  css.textContent=`
+    @media(max-width:760px){
+      .solutionPanel{
+        height:var(--ms-v13-lower-h,auto)!important;
+        min-height:0!important;
+        grid-template-columns:repeat(2,minmax(0,1fr))!important;
+        grid-template-areas:"title title" "moves buttons" "note note"!important;
+        column-gap:18px!important;
+        row-gap:16px!important;
+        align-items:stretch!important;
+        align-content:center!important;
+      }
+      .solutionKicker{
+        grid-area:title!important;
+        font-size:21px!important;
+        line-height:1.14!important;
+        text-align:center!important;
+        color:#969da6!important;
+        font-weight:775!important;
+        margin:0!important;
+      }
+      .solutionList{
+        grid-area:moves!important;
+        align-self:center!important;
+        max-height:var(--ms-v13-list-max,272px)!important;
+      }
+      .buttonStack{
+        grid-area:buttons!important;
+        align-self:stretch!important;
+        justify-content:center!important;
+        gap:8px!important;
+      }
+      .exportNote{grid-area:note!important;}
+    }
+    @media(max-width:390px){
+      .solutionPanel{column-gap:16px!important;row-gap:14px!important;}
+      .solutionKicker{font-size:19.5px!important;}
+    }
+  `;
+  document.head.appendChild(css);
+
+  function layoutLower(){
+    const panel=document.querySelector('.solutionPanel');
+    if(!panel)return;
+    if(window.innerWidth>760){
+      panel.style.removeProperty('--ms-v13-lower-h');
+      panel.style.removeProperty('--ms-v13-list-max');
+      return;
+    }
+    const legal=document.querySelector('.legal');
+    const vv=window.visualViewport;
+    const viewportBottom=vv ? vv.offsetTop+vv.height : window.innerHeight;
+    const panelTop=panel.getBoundingClientRect().top;
+    const legalTop=legal?.getBoundingClientRect().top || (viewportBottom-28);
+    const lowerH=Math.max(250,Math.floor(legalTop-panelTop-12));
+    panel.style.setProperty('--ms-v13-lower-h',lowerH+'px');
+    const title=document.querySelector('.solutionKicker');
+    const titleH=title?.getBoundingClientRect().height || 24;
+    const bodyMax=Math.max(150,Math.min(300,lowerH-titleH-44));
+    panel.style.setProperty('--ms-v13-list-max',bodyMax+'px');
+  }
+  function apply(){requestAnimationFrame(()=>requestAnimationFrame(layoutLower));}
+  const result=document.getElementById('result');
+  if(result)new MutationObserver(()=>{if(result.classList.contains('active'))setTimeout(apply,0);}).observe(result,{attributes:true,attributeFilter:['class']});
+  const list=document.getElementById('solutionList');
+  if(list)new MutationObserver(()=>setTimeout(apply,0)).observe(list,{childList:true});
+  window.addEventListener('resize',apply,{passive:true});
+  if(window.visualViewport){
+    window.visualViewport.addEventListener('resize',apply,{passive:true});
+    window.visualViewport.addEventListener('scroll',apply,{passive:true});
+  }
+  setTimeout(apply,0);
+})();
+
+/* Load the broader screenshot recognizer + longer mate solver. */
+(() => {
+  if(document.querySelector('script[data-mateshot-solver-v3]'))return;
+  const s=document.createElement('script');
+  s.src='solver-v3.js?v=2';
+  s.dataset.mateshotSolverV3='1';
+  document.head.appendChild(s);
+})();
+
+/* Reliable screenshot picker handoff for desktop, iPhone and preview webviews. */
+(() => {
+  if(document.querySelector('script[data-mateshot-upload-fix]'))return;
+  const s=document.createElement('script');
+  s.src='upload-fix.js?v=3';
+  s.dataset.mateshotUploadFix='1';
+  document.head.appendChild(s);
+})();
+
+
+/* ===== mateshot/final-guard.js ===== */
+/* MateShot final consistency guard.
+   Keeps analysis atomic (no provisional error/result flashes), reads the puzzle prompt when
+   it is present in the screenshot, and refuses solutions that contradict side-to-move or mate-in-N.
+   If the visual pipeline found the right occupancy but the wrong line, it performs one final
+   prompt-guided repair pass before showing a terminal screen. */
+(() => {
+  'use strict';
+
+  const baseAnalyze = window.analyze;
+  const baseShow = window.show;
+  if (typeof baseAnalyze !== 'function' || typeof baseShow !== 'function') return;
+
+  const LANG_ES = (navigator.language || 'en').toLowerCase().startsWith('es');
+  let runToken = 0;
+  let locked = false;
+  let lastTerminal = null;
+  let tessPromise = null;
+
+  const EXPECTED = /(?:No he podido reconstruir una posición legal|no he podido confirmar una solución|Afinando la reconstrucción|He encontrado el tablero)/i;
+  const realConsoleError = console.error.bind(console);
+  function quietExpectedError(...args){
+    const msg = args.map(x => x && x.message ? x.message : String(x ?? '')).join(' ');
+    if (EXPECTED.test(msg)) { try { console.debug('[MateShot recovery]', msg); } catch(_){} return; }
+    realConsoleError(...args);
+  }
+
+  window.show = show = function(id){
+    if (locked && (id === 'result' || id === 'error')) {
+      lastTerminal = id;
+      return;
+    }
+    return baseShow(id);
+  };
+
+  function norm(s){
+    return (s || '').toLowerCase().normalize('NFD')
+      .replace(/[\u0300-\u036f]/g,'')
+      .replace(/[^a-z0-9ñ\s]/gi,' ')
+      .replace(/\s+/g,' ').trim();
+  }
+  function wordNumber(s){
+    const m={un:1,uno:1,una:1,one:1,dos:2,two:2,tres:3,three:3,cuatro:4,four:4,cinco:5,five:5,seis:6,six:6,siete:7,seven:7,ocho:8,eight:8};
+    const q=norm(String(s||''));
+    return /^\d+$/.test(q) ? Number(q) : (m[q] || null);
+  }
+  function parseHint(raw){
+    const text=norm(raw);
+    const out={raw:raw||'',text,side:null,mate:null};
+    if(/\b(blancas?|white)\b/.test(text)) out.side='w';
+    if(/\b(negras?|black)\b/.test(text)) out.side=out.side||'b';
+    const mm=text.match(/(?:mate\s+en|mate\s+in|checkmate\s+in)\s+(\d+|un|uno|una|one|dos|two|tres|three|cuatro|four|cinco|five|seis|six|siete|seven|ocho|eight)\b/);
+    if(mm) out.mate=wordNumber(mm[1]);
+    return out;
+  }
+
+  function loadTesseract(){
+    if(window.Tesseract?.recognize) return Promise.resolve(window.Tesseract);
+    if(tessPromise) return tessPromise;
+    tessPromise=new Promise((resolve,reject)=>{
+      const s=document.createElement('script');
+      s.src='https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
+      s.async=true;s.crossOrigin='anonymous';
+      s.onload=()=>window.Tesseract?.recognize?resolve(window.Tesseract):reject(new Error('OCR unavailable'));
+      s.onerror=()=>reject(new Error('OCR unavailable'));
+      document.head.appendChild(s);
+    });
+    return tessPromise;
+  }
+
+  function promptCanvas(img,rect){
+    const W0=img.naturalWidth||img.width,H0=img.naturalHeight||img.height;
+    const W=Math.min(1280,W0),scale=W/W0,H=Math.max(1,Math.round(H0*scale));
+    const c=document.createElement('canvas');c.width=W;c.height=H;
+    const x=c.getContext('2d',{willReadFrequently:true});
+    x.fillStyle='#fff';x.fillRect(0,0,W,H);x.drawImage(img,0,0,W,H);
+    if(rect){
+      const pad=Math.max(8,Math.round(rect.s*scale*.035));
+      x.fillStyle='#fff';
+      x.fillRect(Math.max(0,rect.x*scale-pad),Math.max(0,rect.y*scale-pad),
+        Math.min(W,rect.s*scale+2*pad),Math.min(H,rect.s*scale+2*pad));
+    }
+    return c;
+  }
+
+  async function readPrompt(){
+    if(!S?.img) return {raw:'',text:'',side:null,mate:null};
+    const W=S.img.naturalWidth||S.img.width,H=S.img.naturalHeight||S.img.height;
+    const boardRatio=S?.rect ? (S.rect.s*S.rect.s)/(W*H) : 1;
+    if(boardRatio>.82) return {raw:'',text:'',side:null,mate:null};
+    try{
+      prog(88, LANG_ES?'Verificando el enunciado':'Checking the prompt', LANG_ES?'Leyendo lado y mate…':'Reading side and mate…');
+      const T=await loadTesseract();
+      const res=await T.recognize(promptCanvas(S.img,S.rect),'eng',{logger:()=>{}});
+      const raw=(res?.data?.text||'').replace(/\s+/g,' ').trim();
+      S.promptOcr=raw;
+      return parseHint(raw);
+    }catch(e){
+      console.debug('[MateShot OCR] skipped', e?.message||e);
+      return {raw:'',text:'',side:null,mate:null};
+    }
+  }
+
+  function stableSolution(){
+    return !!(S?.start?.b && Array.isArray(S.line) && S.line.length && Array.isArray(S.positions) && S.positions.length>1);
+  }
+  function matches(h){
+    if(!stableSolution()) return false;
+    if(h.side && S.start.side!==h.side) return false;
+    if(h.mate && Number(S.mateN)!==Number(h.mate)) return false;
+    return true;
+  }
+
+  function rawBoardFromCells(cells){
+    try{return cellsBoard(cells);}catch(_){return null;}
+  }
+  function mergeCells(a,b){
+    if(!a?.length && !b?.length) return null;
+    const out=[];
+    for(let i=0;i<64;i++){
+      const x=a?.[i],y=b?.[i];
+      if((!x||x.empty)&&y&&!y.empty){out.push({...y});continue;}
+      if(x&&!x.empty&&y&&!y.empty){
+        const map=new Map();
+        for(const z of(x.alts||[]))map.set(z.t,{...z});
+        for(const z of(y.alts||[]))if(!map.has(z.t)||(map.get(z.t).score||0)<(z.score||0))map.set(z.t,{...z});
+        out.push({...x,alts:[...map.values()].sort((u,v)=>(v.score||0)-(u.score||0))});
+        continue;
+      }
+      out.push(x?{...x}:y?{...y}:{empty:true,r:(i/8)|0,c:i%8});
+    }
+    return out;
+  }
+
+  async function promptGuidedRepair(h){
+    if(!h.side && !h.mate) return false;
+    const candidates=[];
+    if(S?.cells?.length===64)candidates.push(S.cells);
+    let fast=null;
+    if(S?.img&&S?.rect){try{fast=scanBoard(S.img,S.rect);}catch(_){}}
+    if(fast?.length===64)candidates.push(fast);
+    const merged=mergeCells(S?.cells,fast);
+    if(merged)candidates.unshift(merged);
+
+    const seen=new Set();
+    const originalFindMate=window.findMate;
+    if(typeof originalFindMate!=='function'||typeof solveCells!=='function')return false;
+
+    const restricted=function(board,side,maxDepth,ms){
+      if(h.side && side!==h.side)return null;
+      const limit=h.mate||Math.min(Number(maxDepth)||8,8);
+      const hit=originalFindMate(board,side,limit,ms);
+      if(!hit)return null;
+      if(h.mate && Number(hit.mate)!==Number(h.mate))return null;
+      return hit;
+    };
+
+    window.findMate=findMate=restricted;
+    try{
+      prog(92,LANG_ES?'Afinando la solución':'Refining solution',LANG_ES?'Usando el enunciado para validar la posición…':'Using the prompt to validate the position…');
+      for(const cells of candidates){
+        if(!cells?.length)continue;
+        const key=cells.map(c=>c.empty?'1':((c.color||'?')+(c.alts?.[0]?.t||'?'))).join('');
+        if(seen.has(key))continue;seen.add(key);
+        try{
+          const hit=await solveCells(cells);
+          if(hit && (!h.side||hit.pos.side===h.side) && (!h.mate||Number(hit.mate)===Number(h.mate))){
+            S.cells=cells;S.orientation=hit.orientation;S.start=hit.pos;
+            S.line=annotate(hit.pos,hit.line);S.mateN=hit.mate;
+            S.positions=[{b:hit.pos.b.slice(),side:hit.pos.side}];
+            let p={b:hit.pos.b.slice(),side:hit.pos.side};
+            for(const mv of S.line){p=makeMove(p,mv);S.positions.push({b:p.b.slice(),side:p.side});}
+            S.step=0;
+            document.getElementById('problemText').textContent=(hit.pos.side==='b'?'Negras':'Blancas')+' mueven · mate';
+            document.getElementById('mate').textContent='Mate en '+S.mateN;
+            document.getElementById('line').textContent=notation(S.line,hit.pos.side);
+            renderBoard(S.positions[0].b,S.orientation,null);
+            S.debug=(S.debug?S.debug+' | ':'')+'validado con enunciado';
+            return true;
+          }
+        }catch(e){console.debug('[MateShot guided repair] candidate skipped',e?.message||e);}
+      }
+    }finally{
+      window.findMate=findMate=originalFindMate;
+    }
+    return false;
+  }
+
+  function setFinalError(h){
+    const e=document.getElementById('errorText');
+    if(e){
+      if(h.mate && stableSolution() && Number(S.mateN)!==Number(h.mate)){
+        e.textContent=LANG_ES
+          ? 'He leído mate en '+h.mate+', pero la posición reconstruida produce mate en '+S.mateN+'. No voy a mostrar una solución dudosa.'
+          : 'I read mate in '+h.mate+', but the reconstructed position produces mate in '+S.mateN+'. I will not show an uncertain solution.';
+      }else if(h.side && stableSolution() && S.start.side!==h.side){
+        e.textContent=LANG_ES
+          ? 'El lado que mueve no coincide con el enunciado. No voy a mostrar una solución dudosa.'
+          : 'The side to move does not match the prompt. I will not show an uncertain solution.';
+      }else{
+        e.textContent=LANG_ES
+          ? 'He detectado el tablero, pero no he podido reconstruir una posición legal que encaje con el enunciado.'
+          : 'I found the board, but I could not reconstruct a legal position that matches the prompt.';
+      }
+    }
+    const d=document.getElementById('details');
+    if(d){
+      const bits=[];
+      if(h.raw)bits.push((LANG_ES?'Enunciado':'Prompt')+': '+h.raw);
+      if(S?.rect)bits.push((LANG_ES?'Tablero':'Board')+': '+S.rect.s+' px');
+      if(S?.cells?.length)bits.push((LANG_ES?'Piezas detectadas':'Detected pieces')+': '+S.cells.filter(c=>!c.empty).length);
+      d.textContent=bits.join(' · ');
+    }
+  }
+
+  window.analyze=analyze=async function(url){
+    const my=++runToken;
+    locked=true;lastTerminal=null;
+
+    // Avoid stale state from a previous puzzle influencing the final decision.
+    try{
+      S.start=null;S.line=[];S.positions=[];S.mateN=0;S.step=0;
+      S.promptOcr='';S.integrityMissing=[];S.integrityFastCells=null;
+    }catch(_){}
+
+    const oldConsoleError=console.error;
+    console.error=quietExpectedError;
+    try{
+      await baseAnalyze(url);
+    }catch(e){
+      realConsoleError(e);
+      lastTerminal='error';
+    }finally{
+      console.error=oldConsoleError;
+    }
+    if(my!==runToken)return;
+
+    let hint=await readPrompt();
+    if(my!==runToken)return;
+
+    // If OCR found no useful constraint, a stable solution remains acceptable.
+    if((hint.side||hint.mate) && !matches(hint)){
+      await promptGuidedRepair(hint);
+    }
+
+    locked=false;
+    if(stableSolution() && matches(hint)){
+      prog(100,LANG_ES?'Listo':'Ready','');
+      baseShow('result');
+    }else{
+      setFinalError(hint);
+      baseShow('error');
+    }
+  };
+})();
+
+
+//# sourceURL=mateshot-app-inline.js
 </script>
-<!-- MateShot build: final consistency guard -->
+<script>
+(() => {
+  const es=!!window.MATESHOT_ES;
+  const set=(sel,text)=>{const el=document.querySelector(sel);if(el)el.textContent=text;};
+  const ready=typeof window.analyze==='function' && typeof window.fileData==='function' && !!window.S;
+  if(ready){
+    set('[data-i18n="eyebrow"]',es?'De screenshot a solución':'From screenshot to solution');
+    set('[data-i18n="hero1"]',es?'Sube un problema de ajedrez.':'Upload a chess problem.');
+    set('[data-i18n="hero2"]',es?'Mira su solución.':'See its solution.');
+    set('[data-i18n="heroText"]',es
+      ?'MateShot analiza cualquier imagen que contenga un problema de mate de ajedrez de hasta 8 jugadas, y muestra su solución animada.'
+      :'MateShot analyzes any image containing a chess mate problem of up to 8 moves and shows its animated solution.');
+    set('[data-i18n="upload"]',es?'Subir Screenshot':'Upload Screenshot');
+    const picker=document.getElementById('picker'); if(picker)picker.disabled=false;
+    const pick=document.querySelector('.pick'); if(pick){pick.style.opacity='';pick.style.pointerEvents='';}
+  }else{
+    set('[data-i18n="upload"]',es?'MateShot no pudo iniciar':'MateShot could not start');
+    const pick=document.querySelector('.pick'); if(pick){pick.style.opacity='.62';pick.style.pointerEvents='none';}
+    console.warn('MateShot core did not initialize correctly.');
+  }
+})();
+</script>
+<!-- MateShot build: single-file runtime -->
 </body>
 </html>
