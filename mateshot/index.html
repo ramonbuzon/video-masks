@@ -124,27 +124,36 @@ h1{margin:0;font-size:clamp(40px,8.3vw,72px);line-height:.94;letter-spacing:-.06
 
 <script>
 (() => {
-  const langs=[...(navigator.languages||[]),navigator.language,(Intl.DateTimeFormat().resolvedOptions().locale||'')]
-    .filter(Boolean).map(x=>String(x).toLowerCase());
-  const es=langs.some(x=>/^es(?:-|$)/.test(x));
+  const candidates=[...(navigator.languages||[]),navigator.language,Intl.DateTimeFormat().resolvedOptions().locale]
+    .filter(Boolean).map(v=>String(v).toLowerCase());
+  const es=candidates.some(v=>/^es(?:-|$)/.test(v));
   window.MATESHOT_ES=es;
   document.documentElement.lang=es?'es':'en';
-  const set=(sel,text)=>{const el=document.querySelector(sel);if(el)el.textContent=text;};
-  set('[data-i18n="eyebrow"]',es?'De screenshot a solución':'From screenshot to solution');
-  set('[data-i18n="hero1"]',es?'Sube un problema de ajedrez.':'Upload a chess problem.');
-  set('[data-i18n="hero2"]',es?'Mira su solución.':'See its solution.');
-  set('[data-i18n="heroText"]',es
-    ?'MateShot analiza cualquier imagen que contenga un problema de mate de ajedrez de hasta 8 jugadas, y muestra su solución animada.'
-    :'MateShot analyzes any image containing a chess mate problem of up to 8 moves and shows its animated solution.');
-  set('[data-i18n="upload"]',es?'Preparando MateShot…':'Preparing MateShot…');
+  const set=(q,t)=>{const e=document.querySelector(q);if(e)e.textContent=t;};
+  const copy=es?{
+    eyebrow:'De screenshot a solución',
+    hero1:'Sube un problema de ajedrez.',
+    hero2:'Mira su solución.',
+    heroText:'MateShot analiza cualquier imagen que contenga un problema de mate de ajedrez de hasta 8 jugadas, y muestra su solución animada.',
+    upload:'Subir Screenshot'
+  }:{
+    eyebrow:'From screenshot to solution',
+    hero1:'Upload a chess problem.',
+    hero2:'See its solution.',
+    heroText:'MateShot analyzes any image containing a chess checkmate problem of up to 8 moves and shows its animated solution.',
+    upload:'Upload Screenshot'
+  };
+  window.MATESHOT_HOME_COPY=copy;
+  set('[data-i18n="eyebrow"]',copy.eyebrow);
+  set('[data-i18n="hero1"]',copy.hero1);
+  set('[data-i18n="hero2"]',copy.hero2);
+  set('[data-i18n="heroText"]',copy.heroText);
+  set('[data-i18n="upload"]',copy.upload);
   const core=document.querySelector('.homeCore'); if(core)core.style.width='min(100%, 600px)';
   const micro=document.querySelector('.microcopy'); if(micro)micro.remove();
-  const picker=document.getElementById('picker'); if(picker)picker.disabled=true;
-  const pick=document.querySelector('.pick'); if(pick){pick.style.opacity='.62';pick.style.pointerEvents='none';}
   document.documentElement.dataset.mateshotReady='1';
 })();
-</script>
-<script id="mateshot-app">
+</script><script id="mateshot-app">
 
 /* ===== solve5/app.js ===== */
 /* Solve prototype: fully local board detection, Chess.com-style recognition and mate search. */
@@ -238,22 +247,56 @@ $('copy').onclick=async()=>{let t=notation(S.line,S.start.side);try{await naviga
 $('share').onclick=async()=>{let t='Mate en '+S.mateN+'\n'+notation(S.line,S.start.side);if(navigator.share){try{await navigator.share({title:'Chess puzzle solution',text:t});return;}catch(e){}}try{await navigator.clipboard.writeText(t);}catch(e){}$('share').textContent='Copiado ✓';setTimeout(()=>$('share').textContent='Compartir',1100);};
 
 
-;(() => {
-  const names = [
-    '
-</body>
-</html>
-,'SCREENS','GLYPH','TYPES','TEMPLATE64','TEMPLATES','S',
-    'show','prog','wait','fileData','loadImg','median','detectBoard',
-    'largestComponent','normalizeMask','iou','scanBoard','cellsBoard',
-    'rotateBoard','boardKey','validShape','preferredOrientation','pc','pt',
-    'other','rc','inside','sq','kingIndex','attacked','inCheck','pseudoMoves',
-    'makeMove','legalMoves','givesCheck','posKey','forcedMate','findMate',
-    'solveCells','fenBoard','annotate','notation','renderBoard','stopPlay',
-    'gotoStep','playLoop','togglePlay','analyze'
-  ];
-  for (const name of names) { try { window[name] = eval(name); } catch (_) {} }
-})();
+/* MateShot global bridge */
+try{window.$=$;}catch(_){}
+try{window.SCREENS=SCREENS;}catch(_){}
+try{window.GLYPH=GLYPH;}catch(_){}
+try{window.TYPES=TYPES;}catch(_){}
+try{window.TEMPLATE64=TEMPLATE64;}catch(_){}
+try{window.TEMPLATES=TEMPLATES;}catch(_){}
+try{window.S=S;}catch(_){}
+try{window.show=show;}catch(_){}
+try{window.prog=prog;}catch(_){}
+try{window.wait=wait;}catch(_){}
+try{window.fileData=fileData;}catch(_){}
+try{window.loadImg=loadImg;}catch(_){}
+try{window.median=median;}catch(_){}
+try{window.detectBoard=detectBoard;}catch(_){}
+try{window.largestComponent=largestComponent;}catch(_){}
+try{window.normalizeMask=normalizeMask;}catch(_){}
+try{window.iou=iou;}catch(_){}
+try{window.scanBoard=scanBoard;}catch(_){}
+try{window.cellsBoard=cellsBoard;}catch(_){}
+try{window.rotateBoard=rotateBoard;}catch(_){}
+try{window.boardKey=boardKey;}catch(_){}
+try{window.validShape=validShape;}catch(_){}
+try{window.preferredOrientation=preferredOrientation;}catch(_){}
+try{window.pc=pc;}catch(_){}
+try{window.pt=pt;}catch(_){}
+try{window.other=other;}catch(_){}
+try{window.rc=rc;}catch(_){}
+try{window.inside=inside;}catch(_){}
+try{window.sq=sq;}catch(_){}
+try{window.kingIndex=kingIndex;}catch(_){}
+try{window.attacked=attacked;}catch(_){}
+try{window.inCheck=inCheck;}catch(_){}
+try{window.pseudoMoves=pseudoMoves;}catch(_){}
+try{window.makeMove=makeMove;}catch(_){}
+try{window.legalMoves=legalMoves;}catch(_){}
+try{window.givesCheck=givesCheck;}catch(_){}
+try{window.posKey=posKey;}catch(_){}
+try{window.forcedMate=forcedMate;}catch(_){}
+try{window.findMate=findMate;}catch(_){}
+try{window.solveCells=solveCells;}catch(_){}
+try{window.fenBoard=fenBoard;}catch(_){}
+try{window.annotate=annotate;}catch(_){}
+try{window.notation=notation;}catch(_){}
+try{window.renderBoard=renderBoard;}catch(_){}
+try{window.stopPlay=stopPlay;}catch(_){}
+try{window.gotoStep=gotoStep;}catch(_){}
+try{window.playLoop=playLoop;}catch(_){}
+try{window.togglePlay=togglePlay;}catch(_){}
+try{window.analyze=analyze;}catch(_){}
 
 /* ===== solve6/solver-v3.js ===== */
 /* MateShot solver v3: robust board refinement, coordinate-safe recognition and deeper composed-mate search. */
@@ -2569,27 +2612,20 @@ setTimeout(()=>{
 
 
 //# sourceURL=mateshot-app-inline.js
-</script>
-<script>
+</script><script>
 (() => {
-  const es=!!window.MATESHOT_ES;
-  const set=(sel,text)=>{const el=document.querySelector(sel);if(el)el.textContent=text;};
-  const ready=typeof window.analyze==='function' && typeof window.fileData==='function' && !!window.S;
-  if(ready){
-    set('[data-i18n="eyebrow"]',es?'De screenshot a solución':'From screenshot to solution');
-    set('[data-i18n="hero1"]',es?'Sube un problema de ajedrez.':'Upload a chess problem.');
-    set('[data-i18n="hero2"]',es?'Mira su solución.':'See its solution.');
-    set('[data-i18n="heroText"]',es
-      ?'MateShot analiza cualquier imagen que contenga un problema de mate de ajedrez de hasta 8 jugadas, y muestra su solución animada.'
-      :'MateShot analyzes any image containing a chess mate problem of up to 8 moves and shows its animated solution.');
-    set('[data-i18n="upload"]',es?'Subir Screenshot':'Upload Screenshot');
-    const picker=document.getElementById('picker'); if(picker)picker.disabled=false;
-    const pick=document.querySelector('.pick'); if(pick){pick.style.opacity='';pick.style.pointerEvents='';}
-  }else{
-    set('[data-i18n="upload"]',es?'MateShot no pudo iniciar':'MateShot could not start');
-    const pick=document.querySelector('.pick'); if(pick){pick.style.opacity='.62';pick.style.pointerEvents='none';}
-    console.warn('MateShot core did not initialize correctly.');
-  }
+  const es=!!window.MATESHOT_ES,copy=window.MATESHOT_HOME_COPY||{};
+  const set=(q,t)=>{const e=document.querySelector(q);if(e&&t)e.textContent=t;};
+  set('[data-i18n="eyebrow"]',copy.eyebrow);
+  set('[data-i18n="hero1"]',copy.hero1);
+  set('[data-i18n="hero2"]',copy.hero2);
+  set('[data-i18n="heroText"]',copy.heroText);
+  set('[data-i18n="upload"]',copy.upload || (es?'Subir Screenshot':'Upload Screenshot'));
+  const picker=document.getElementById('picker'); if(picker)picker.disabled=false;
+  const pick=document.querySelector('.pick'); if(pick){pick.style.opacity='';pick.style.pointerEvents='';}
+  const missing=['analyze','fileData','show'].filter(n=>typeof window[n]!=='function');
+  if(!window.S)missing.push('S');
+  if(missing.length) console.warn('MateShot startup diagnostics, missing globals:',missing.join(', '));
 })();
 </script>
 <!-- MateShot build: single-file runtime -->
